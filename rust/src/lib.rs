@@ -35,5 +35,8 @@ pub mod upstream;
 
 mod frb_generated;
 
-#[cfg(target_os = "windows")]
+// Desktop player bridge (CENC decrypt via the C core + loopback range serve).
+// Shared by the Windows and macOS desktop ports; Android keeps its JNI bridge
+// in native/android/.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 mod desktop_media;

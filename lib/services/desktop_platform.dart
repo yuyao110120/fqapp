@@ -23,15 +23,27 @@ import 'desktop_media.dart';
 import 'app_log.dart';
 import 'platform_channel.dart';
 
-bool get isWindowsDesktop =>
+/// The desktop ports (Windows and macOS) share this in-process adapter.
+bool get isWindowsPlatform =>
     !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
+bool get isMacOSPlatform =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
+bool get isDesktopPlatform => isWindowsPlatform || isMacOSPlatform;
 
-/// On Windows an inactive window is still visible; it simply lacks input focus.
-/// Only hidden/paused/detached windows should defer foreground video playback.
+/// Windows-only desktop shell: NavigationRail + wide page layouts.
+///
+/// macOS deliberately keeps the original portrait/mobile layout (it only uses
+/// [isDesktopPlatform] for the shared desktop player/platform adapter), so all
+/// UI layout decisions must use this flag instead.
+bool get isWindowsDesktop => isWindowsPlatform;
+
+/// On a desktop an inactive window is still visible; it simply lacks input
+/// focus. Only hidden/paused/detached windows should defer foreground video
+/// playback.
 bool playbackAppIsActive(AppLifecycleState? state) =>
     state == null ||
     state == AppLifecycleState.resumed ||
-    (isWindowsDesktop && state == AppLifecycleState.inactive);
+    (isDesktopPlatform && state == AppLifecycleState.inactive);
 
 class DesktopPlatform with WindowListener {
   DesktopPlatform._();
@@ -51,28 +63,42 @@ class DesktopPlatform with WindowListener {
   bool _playerAwake = false;
   String? _readerSession;
   Timer? _readerTimer;
+  Process? _caffeinate;
 
   Stream<dynamic> events(String name) =>
       (_events[name] ??= StreamController<dynamic>.broadcast()).stream;
   void _emit(String name, dynamic event) => _events[name]?.add(event);
 
   Future<void> initialize() async {
-    if (!isWindowsDesktop) return;
+    if (!isDesktopPlatform) return;
     MediaKit.ensureInitialized();
     await windowManager.ensureInitialized();
     PlatformChannels.invoke = invoke;
     PlatformChannels.events = events;
+    if (isMacOSPlatform) {
+      // Media keys / Now Playing buttons come back through the Runner's
+      // MPNowPlayingInfoCenter bridge; forward them as the same remote actions
+      // the Android media session emits.
+      const MethodChannel(
+        'fqapp/now_playing',
+      ).setMethodCallHandler(_handleNowPlayingCall);
+    }
     windowManager.addListener(this);
     await windowManager.setPreventClose(true);
     final display = await screenRetriever.getPrimaryDisplay();
     final available = display.visibleSize ?? display.size;
+    // Windows uses the wide desktop shell; macOS keeps the original portrait
+    // mobile layout, so its window is phone-shaped (clamped to the display).
+    final preferredSize = isMacOSPlatform
+        ? Size(min(480, available.width), min(900, available.height))
+        : Size(min(1280, available.width), min(800, available.height));
+    final minimumSize = isMacOSPlatform
+        ? Size(min(400, available.width), min(560, available.height))
+        : Size(min(800, available.width), min(440, available.height));
     await windowManager.waitUntilReadyToShow(
       WindowOptions(
-        size: Size(min(1280, available.width), min(800, available.height)),
-        minimumSize: Size(
-          min(800, available.width),
-          min(440, available.height),
-        ),
+        size: preferredSize,
+        minimumSize: minimumSize,
         center: true,
         title: '什锦铺',
       ),
@@ -94,32 +120,52 @@ class DesktopPlatform with WindowListener {
       _emit('fqapp/system_tts_events', {'type': 'error', 'id': id});
     });
     // Optional system media integration must not prevent reading or startup.
-    try {
-      await SMTCWindows.initialize();
-      _smtc = SMTCWindows();
-      _smtc!.buttonPressStream.listen((button) {
-        final action = switch (button) {
-          PressedButton.play => 'playPause',
-          PressedButton.pause => 'playPause',
-          PressedButton.next => 'next',
-          PressedButton.previous => 'prev',
-          PressedButton.stop => 'stop',
-          _ => null,
-        };
-        if (action != null) {
-          unawaited(
-            PlatformChannels.notify(
-              'fqapp/native_player',
-              'onNotificationAction',
-              {'action': action},
-            ),
-          );
-        }
-      });
-      await _smtc!.disableSmtc();
-    } catch (_) {
-      _smtc = null;
+    // SMTC is Windows-only; macOS gets its Now Playing integration later.
+    if (isWindowsPlatform) {
+      try {
+        await SMTCWindows.initialize();
+        _smtc = SMTCWindows();
+        _smtc!.buttonPressStream.listen((button) {
+          final action = switch (button) {
+            PressedButton.play => 'playPause',
+            PressedButton.pause => 'playPause',
+            PressedButton.next => 'next',
+            PressedButton.previous => 'prev',
+            PressedButton.stop => 'stop',
+            _ => null,
+          };
+          if (action != null) {
+            unawaited(
+              PlatformChannels.notify(
+                'fqapp/native_player',
+                'onNotificationAction',
+                {'action': action},
+              ),
+            );
+          }
+        });
+        await _smtc!.disableSmtc();
+      } catch (_) {
+        _smtc = null;
+      }
     }
+  }
+
+  static Future<dynamic> _handleNowPlayingCall(MethodCall call) async {
+    if (call.method == 'remoteAction') {
+      final arguments = call.arguments;
+      final action = arguments is Map ? arguments['action'] : null;
+      if (action is String) {
+        unawaited(
+          PlatformChannels.notify(
+            'fqapp/native_player',
+            'onNotificationAction',
+            {'action': action},
+          ),
+        );
+      }
+    }
+    return null;
   }
 
   Widget videoSurface(int id, {Key? key}) {
@@ -165,8 +211,17 @@ class DesktopPlatform with WindowListener {
       _players.clear();
       _utterance = null;
       await _tts.stop();
+      if (isMacOSPlatform) {
+        try {
+          await const MethodChannel(
+            'fqapp/now_playing',
+          ).invokeMethod<void>('stop');
+        } catch (_) {}
+      }
       await _smtc?.disableSmtc();
       _readerTimer?.cancel();
+      _caffeinate?.kill();
+      _caffeinate = null;
       _readerAwake = _playerAwake = false;
       _updateAwake();
     } finally {
@@ -200,6 +255,26 @@ class DesktopPlatform with WindowListener {
           return null;
         }
         if (method == 'startListenForeground') {
+          if (isMacOSPlatform) {
+            try {
+              await const MethodChannel(
+                'fqapp/now_playing',
+              ).invokeMethod<void>('update', <String, dynamic>{
+                'title': args['title'] as String?,
+                'episode': args['episode'] as String?,
+                'coverUrl': args['coverUrl'] as String? ?? '',
+                'playing': args['playing'] == true,
+                'hasPrev': args['hasPrev'] == true,
+                'hasNext': args['hasNext'] == true,
+                'positionMs': (args['positionMs'] as num?)?.toInt() ?? 0,
+                'durationMs': (args['durationMs'] as num?)?.toInt() ?? 0,
+                'speed': (args['speed'] as num?)?.toDouble() ?? 1.0,
+              });
+            } catch (_) {
+              // Now Playing is best-effort; audio playback must not depend on it.
+            }
+            return null;
+          }
           final smtc = _smtc;
           if (smtc == null) return null;
           await smtc.updateMetadata(
@@ -234,6 +309,14 @@ class DesktopPlatform with WindowListener {
           return null;
         }
         if (method == 'stopListenForeground') {
+          if (isMacOSPlatform) {
+            try {
+              await const MethodChannel(
+                'fqapp/now_playing',
+              ).invokeMethod<void>('stop');
+            } catch (_) {}
+            return null;
+          }
           await _smtc?.disableSmtc();
           return null;
         }
@@ -271,6 +354,8 @@ class DesktopPlatform with WindowListener {
         return _speech(method, args);
       case 'fqapp/fanqie_account':
         if (method == 'login') {
+          // Windows uses WebView2, macOS uses a WKWebView dialog; the platform
+          // split lives in DesktopLogin.
           final context = navigatorKey.currentContext;
           if (context == null) {
             throw PlatformException(code: 'not_ready', message: '窗口尚未就绪');
@@ -299,10 +384,14 @@ class DesktopPlatform with WindowListener {
     switch (method) {
       case 'engines':
         final voices = await _tts.getVoices;
+        final systemEngine = isWindowsPlatform ? 'windows' : 'system';
         return {
-          'defaultEngine': 'windows',
+          'defaultEngine': systemEngine,
           'engines': [
-            {'package': 'windows', 'label': 'Windows 默认语音'},
+            {
+              'package': systemEngine,
+              'label': isWindowsPlatform ? 'Windows 默认语音' : '系统默认语音',
+            },
             if (voices is List)
               for (final voice in voices)
                 if (voice is Map && voice['name'] is String)
@@ -335,7 +424,9 @@ class DesktopPlatform with WindowListener {
         if (result == 0) {
           throw PlatformException(
             code: 'tts_failed',
-            message: 'Windows 语音不可用，请安装中文语音',
+            message: isWindowsPlatform
+                ? 'Windows 语音不可用，请安装中文语音'
+                : '系统语音不可用，请在系统设置中安装中文语音',
           );
         }
         return null;
@@ -345,7 +436,13 @@ class DesktopPlatform with WindowListener {
         await _tts.stop();
         return null;
       case 'settings':
-        await Process.run('explorer.exe', ['ms-settings:speech']);
+        if (isWindowsPlatform) {
+          await Process.run('explorer.exe', ['ms-settings:speech']);
+        } else if (isMacOSPlatform) {
+          await Process.run('open', [
+            'x-apple.systempreferences:com.apple.Speech-Settings.extension',
+          ]);
+        }
         return null;
     }
     throw MissingPluginException(method);
@@ -412,11 +509,37 @@ class DesktopPlatform with WindowListener {
     'systemBrightness': 1.0,
   };
   void _updateAwake() {
-    final call = DynamicLibrary.open('kernel32.dll')
-        .lookupFunction<Uint32 Function(Uint32), int Function(int)>(
-          'SetThreadExecutionState',
-        );
-    call(0x80000000 | (_readerAwake || _playerAwake ? 3 : 0));
+    final wantAwake = _readerAwake || _playerAwake;
+    if (isWindowsPlatform) {
+      final call = DynamicLibrary.open('kernel32.dll')
+          .lookupFunction<Uint32 Function(Uint32), int Function(int)>(
+            'SetThreadExecutionState',
+          );
+      call(0x80000000 | (wantAwake ? 3 : 0));
+      return;
+    }
+    if (!isMacOSPlatform) return;
+    // macOS: keep the display and system awake with a child caffeinate that is
+    // killed as soon as neither the reader nor a player asks for it.
+    if (!wantAwake) {
+      _caffeinate?.kill();
+      _caffeinate = null;
+      return;
+    }
+    if (_caffeinate != null) return;
+    unawaited(() async {
+      try {
+        final process = await Process.start('caffeinate', ['-d', '-i']);
+        if (_readerAwake || _playerAwake) {
+          _caffeinate = process;
+        } else {
+          process.kill();
+        }
+      } catch (_) {
+        // Best-effort only: failing to keep the display awake must not break
+        // reading or playback.
+      }
+    }());
   }
 
   String _safeName(String name) =>
@@ -545,6 +668,7 @@ String decodeDesktopText(Uint8List bytes) {
   try {
     return utf8.decode(bytes).replaceFirst(RegExp('^\uFEFF'), '');
   } on FormatException {
+    if (!isWindowsPlatform) return _decodeGbkOnDesktop(bytes);
     final convert = DynamicLibrary.open('kernel32.dll')
         .lookupFunction<
           Int32 Function(
@@ -572,6 +696,39 @@ String decodeDesktopText(Uint8List bytes) {
       calloc.free(input);
       if (output != nullptr) calloc.free(output);
     }
+  }
+}
+
+/// GBK fallback for the non-Windows desktop ports. macOS ships iconv in
+/// /usr/bin, which decodes the legacy Chinese encodings the in-app TXT picker
+/// can encounter; the conversion is synchronous because the picker returns the
+/// decoded text in the same reply.
+String _decodeGbkOnDesktop(Uint8List bytes) {
+  final directory = Directory.systemTemp.createTempSync('fqapp-gbk-');
+  try {
+    final input = File('${directory.path}/input.bin')..writeAsBytesSync(bytes);
+    final output = File('${directory.path}/output.txt');
+    final result = Process.runSync('iconv', [
+      '-f',
+      'GBK',
+      '-t',
+      'UTF-8',
+      input.path,
+      '-o',
+      output.path,
+    ]);
+    if (result.exitCode != 0 || !output.existsSync()) {
+      throw const FormatException('无法识别 TXT 编码');
+    }
+    return output.readAsStringSync().replaceFirst(RegExp('^\uFEFF'), '');
+  } on FormatException {
+    rethrow;
+  } catch (_) {
+    throw const FormatException('无法识别 TXT 编码');
+  } finally {
+    try {
+      directory.deleteSync(recursive: true);
+    } catch (_) {}
   }
 }
 

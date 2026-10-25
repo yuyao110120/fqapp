@@ -406,7 +406,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) dramaLightPageNotifier.value = !_current.playsInline;
     });
-    if (isWindowsDesktop) {
+    if (isDesktopPlatform) {
       DesktopPlatform.fullscreen.addListener(_desktopFullscreenChanged);
     }
     WidgetsBinding.instance.addObserver(this);
@@ -462,7 +462,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
 
   @override
   void dispose() {
-    if (isWindowsDesktop) {
+    if (isDesktopPlatform) {
       DesktopPlatform.fullscreen.removeListener(_desktopFullscreenChanged);
     }
     WidgetsBinding.instance.removeObserver(this);
@@ -609,7 +609,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
         // 视频在焦点刚丢时就拉起来。所以桌面端只有可见性分支自己暂停过
         // 的那一次才许在这里恢复，手动暂停不许被焦点变化推翻。Android
         // 没有「可见但失焦」态，保持原有的回前台续播。
-        if (isWindowsDesktop && !_inlineVisibilityPaused) return;
+        if (isDesktopPlatform && !_inlineVisibilityPaused) return;
         _resumeInline();
         _scheduleInlineSync();
       }
@@ -3608,7 +3608,7 @@ class _InlineVideoLayer extends StatelessWidget {
               // Official display mode for a feed card: fill the frame unless
               // the source is wide enough to be pinned to its width. The
               // overflow is clipped by the ClipRRect above this layer.
-              fit: isWindowsDesktop ? VideoFit.contain : VideoFit.fillFrame,
+              fit: isDesktopPlatform ? VideoFit.contain : VideoFit.fillFrame,
             );
             return Stack(
               fit: StackFit.expand,
@@ -3620,7 +3620,7 @@ class _InlineVideoLayer extends StatelessWidget {
                     rect: layout.video,
                     child: RotatedBox(
                       quarterTurns: playback.rotation.value,
-                      child: isWindowsDesktop
+                      child: isDesktopPlatform
                           ? DesktopPlatform.instance.videoSurface(
                               textureId,
                               key: ValueKey('drama_inline_${item.id}'),

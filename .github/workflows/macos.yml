@@ -1,0 +1,92 @@
+name: macOS
+
+# Builds the macOS port on GitHub's arm64 macOS runners. The app is ad-hoc
+# signed by scripts/build_macos.sh (no Developer ID secrets are required);
+# the zip is uploaded as an Actions artifact. See MACOS.md / FORKING_MACOS.md.
+
+on:
+  push:
+    branches: [macos]
+    tags: ['macos-v*']
+    paths:
+      - 'lib/**'
+      - 'macos/**'
+      - 'rust/**'
+      - 'assets/**'
+      - 'scripts/build_macos.sh'
+      - 'scripts/verify_macos_media.py'
+      - 'test/macos_smoke_main.dart'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.github/workflows/macos.yml'
+  pull_request:
+    paths:
+      - 'lib/**'
+      - 'macos/**'
+      - 'rust/**'
+      - 'assets/**'
+      - 'scripts/build_macos.sh'
+      - 'scripts/verify_macos_media.py'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.github/workflows/macos.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # arm64 runner: the port pins ARCHS=arm64, so an arm64 host is required.
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.6'
+          channel: stable
+          cache: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Toolchain
+        run: |
+          flutter --version
+          xcodebuild -version
+          rustc --version
+          cargo --version
+          pod --version || true
+
+      - name: CocoaPods
+        run: |
+          if ! command -v pod >/dev/null 2>&1; then
+            sudo gem install cocoapods
+          fi
+          pod --version
+
+      - name: Flutter config (CocoaPods, no SPM)
+        run: flutter config --no-enable-swift-package-manager
+
+      - name: Dependencies
+        run: flutter pub get
+
+      - name: Static analysis
+        run: flutter analyze --no-pub
+
+      - name: Rust tests
+        run: cargo test --manifest-path rust/Cargo.toml --release --lib
+
+      - name: Build and package
+        run: ./scripts/build_macos.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fqapp-macos-${{ github.run_number }}
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error

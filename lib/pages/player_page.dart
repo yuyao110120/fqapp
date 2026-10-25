@@ -779,15 +779,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   /// 是否满足进悬浮窗的条件：开关开 + 正在播 + 播放器就绪。
   bool _canFloat() =>
-      !isWindowsDesktop &&
+      !isDesktopPlatform &&
       !_floating &&
       PlayerPreferences.floatingWindow.value &&
       _player != null &&
       _playing &&
       _error == null;
 
-  String _episodeTitle() =>
-      widget.eps.isEmpty ? '' : widget.eps[_index].title;
+  String _episodeTitle() => widget.eps.isEmpty ? '' : widget.eps[_index].title;
 
   /// 启动悬浮窗：原生侧起服务并在 surface 就绪后把画面换到悬浮窗。
   /// 只有原生侧成功返回才置 `_floating`：焦点被占 / 服务启动失败时
@@ -942,7 +941,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   Future<void> _tryAutoplay(int generation) async {
     final player = _pendingAutoplay;
-    if (isWindowsDesktop && player != null) {
+    if (isDesktopPlatform && player != null) {
       AppLog.d(
         'desktop-autoplay',
         'active=$_appActive lifecycle=${WidgetsBinding.instance.lifecycleState} paging=$_paging current=${_current(generation, player)}',
@@ -1713,7 +1712,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         if (texture != null)
           RotatedBox(
             quarterTurns: _player!.videoRotationCorrection ~/ 90,
-            child: isWindowsDesktop
+            child: isDesktopPlatform
                 ? DesktopPlatform.instance.videoSurface(
                     texture,
                     key: const ValueKey('player-texture'),

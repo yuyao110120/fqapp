@@ -72,7 +72,7 @@ class SettingsPage extends StatelessWidget {
         subtitle: '后台播放、通知栏控制与系统朗读',
         items: [
           _backgroundAudioItem(),
-          if (!isWindowsDesktop) _audioRateEngineItem(),
+          if (!isDesktopPlatform) _audioRateEngineItem(),
           SettingsItem(
             icon: LucideIcons.mic,
             title: '系统朗读',
@@ -90,8 +90,8 @@ class SettingsPage extends StatelessWidget {
         subtitle: '播放',
         items: [
           _muteWhenColdStartItem(),
-          if (!isWindowsDesktop) _floatingWindowItem(),
-          if (!isWindowsDesktop) _videoDecoderItem(),
+          if (!isDesktopPlatform) _floatingWindowItem(),
+          if (!isDesktopPlatform) _videoDecoderItem(),
         ],
       ),
       SettingsCategory(

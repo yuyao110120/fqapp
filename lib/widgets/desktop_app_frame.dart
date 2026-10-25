@@ -149,8 +149,7 @@ class DesktopAppFrame extends StatelessWidget {
                                           textInputAction:
                                               TextInputAction.search,
                                           decoration: InputDecoration(
-                                            hintText:
-                                                '搜索小说、短剧、漫画、听书 / 作品 ID',
+                                            hintText: '搜索小说、短剧、漫画、听书 / 作品 ID',
                                             isDense: true,
                                             prefixIcon: const Icon(
                                               LucideIcons.search,
@@ -173,7 +172,10 @@ class DesktopAppFrame extends StatelessWidget {
                         ],
                       ),
                     ),
-                    Expanded(child: child),
+                    // The Navigator owns its own Overlay but does not clip
+                    // route content; keep any transition inside the content
+                    // column so it can never paint over the rail.
+                    Expanded(child: ClipRect(child: child)),
                   ],
                 ),
               ),

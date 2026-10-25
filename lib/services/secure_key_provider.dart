@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:hive_ce/hive.dart';
 
@@ -43,6 +45,106 @@ class InMemorySecureKeyStorage implements SecureKeyStorage {
   }
 }
 
+/// Key file in the app's private data directory, readable only by the user.
+///
+/// This is the macOS development fallback for when the Keychain is not
+/// available: an ad-hoc signed sandboxed app has no
+/// `keychain-access-groups` entitlement that the system can validate, so
+/// flutter_secure_storage's SecItem calls fail with
+/// errSecMissingEntitlement (-34018). A 0600 file in the sandbox container is
+/// still private to the user and keeps local Hive boxes encrypted; once the
+/// app is signed with a Developer ID team, [KeychainThenFileStorage] uses the
+/// Keychain again and this file is only consulted for migration.
+class MacOSFileKeyStorage implements SecureKeyStorage {
+  MacOSFileKeyStorage({Future<Directory> Function()? supportDirectory})
+    : _supportDirectory = supportDirectory ?? getApplicationSupportDirectory;
+
+  final Future<Directory> Function() _supportDirectory;
+
+  Future<File> _keyFile(String key) async {
+    final support = await _supportDirectory();
+    final directory = Directory('${support.path}/keys');
+    await directory.create(recursive: true);
+    final safeName = key.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+    return File('${directory.path}/$safeName');
+  }
+
+  @override
+  Future<String?> read(String key) async {
+    try {
+      final file = await _keyFile(key);
+      if (!await file.exists()) return null;
+      final value = (await file.readAsString()).trim();
+      return value.isEmpty ? null : value;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> write(String key, String value) async {
+    final file = await _keyFile(key);
+    final temporary = File('${file.path}.tmp');
+    await temporary.writeAsString(value, flush: true);
+    try {
+      await temporary.rename(file.path);
+    } on FileSystemException {
+      await file.writeAsString(value, flush: true);
+    }
+    try {
+      await Process.run('chmod', ['600', file.path]);
+    } catch (_) {
+      // Best effort: the container is already only accessible to this user.
+    }
+  }
+}
+
+/// Keychain-first storage with a macOS file fallback for unsigned dev builds.
+class KeychainThenFileStorage implements SecureKeyStorage {
+  KeychainThenFileStorage({
+    SecureKeyStorage? keychain,
+    SecureKeyStorage? fallback,
+  }) : _keychain = keychain ?? const FlutterSecureKeyStorage(),
+       _fallback = fallback ?? MacOSFileKeyStorage();
+
+  final SecureKeyStorage _keychain;
+  final SecureKeyStorage _fallback;
+
+  @override
+  Future<String?> read(String key) async {
+    try {
+      final value = await _keychain.read(key);
+      if (value != null && value.isNotEmpty) return value;
+    } catch (_) {
+      // Fall through to the file store.
+    }
+    return _fallback.read(key);
+  }
+
+  @override
+  Future<void> write(String key, String value) async {
+    try {
+      await _keychain.write(key, value);
+      return;
+    } catch (_) {
+      await _fallback.write(key, value);
+    }
+  }
+}
+
+/// Secure storage for the current platform.
+///
+/// macOS uses the Keychain when the build is signed with a team that can
+/// validate `keychain-access-groups`, and transparently falls back to the
+/// sandbox-private key file for ad-hoc local builds. All other platforms keep
+/// using flutter_secure_storage directly.
+SecureKeyStorage defaultSecureKeyStorage() {
+  if (!kIsWeb && Platform.isMacOS) {
+    return KeychainThenFileStorage();
+  }
+  return const FlutterSecureKeyStorage();
+}
+
 /// Owns the random 256-bit keys that encrypt local data at rest.
 ///
 /// One key per purpose, all base64-encoded in secure storage:
@@ -64,7 +166,7 @@ class SecureKeyProvider {
   SecureKeyProvider({
     SecureKeyStorage? storage,
     this.storageTimeout = const Duration(seconds: 10),
-  }) : _storage = storage ?? const FlutterSecureKeyStorage();
+  }) : _storage = storage ?? defaultSecureKeyStorage();
 
   static final SecureKeyProvider instance = SecureKeyProvider();
 

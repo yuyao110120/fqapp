@@ -10,9 +10,19 @@ typedef _FreeNative = Void Function(Pointer<Utf8>);
 typedef _Free = void Function(Pointer<Utf8>);
 
 String desktopCoreLibraryPath() {
-  final bundled = File(
-    '${File(Platform.resolvedExecutable).parent.path}/fqapi_core.dll',
-  );
+  final executableDir = File(Platform.resolvedExecutable).parent;
+  if (Platform.isMacOS) {
+    // Flutter macOS wraps native libraries in Contents/Frameworks; the bundle
+    // build phase copies the Rust core there and ad-hoc signs it.
+    for (final candidate in <String>[
+      '${executableDir.parent.path}/Frameworks/libfqapi_core.dylib',
+      '${executableDir.path}/libfqapi_core.dylib',
+    ]) {
+      if (File(candidate).existsSync()) return candidate;
+    }
+    return File('rust/target/release/libfqapi_core.dylib').absolute.path;
+  }
+  final bundled = File('${executableDir.path}/fqapi_core.dll');
   if (bundled.existsSync()) return bundled.path;
   return File('rust/target/release/fqapi_core.dll').absolute.path;
 }

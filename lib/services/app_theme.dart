@@ -74,6 +74,21 @@ class _NoPageTransitionBuilder extends PageTransitionsBuilder {
   ) => child;
 }
 
+/// Desktop/e-ink route changes swap instantly. Keeping the same list for every
+/// theme matters: light/dark used to fall back to the platform default
+/// (Cupertino slide on macOS), whose un-clipped Navigator painted over the
+/// Windows desktop rail.
+const _noPageTransitions = PageTransitionsTheme(
+  builders: {
+    TargetPlatform.android: _NoPageTransitionBuilder(),
+    TargetPlatform.iOS: _NoPageTransitionBuilder(),
+    TargetPlatform.macOS: _NoPageTransitionBuilder(),
+    TargetPlatform.windows: _NoPageTransitionBuilder(),
+    TargetPlatform.linux: _NoPageTransitionBuilder(),
+    TargetPlatform.fuchsia: _NoPageTransitionBuilder(),
+  },
+);
+
 ThemeMode themeModeFromName(String? name) {
   switch (name) {
     case 'light':
@@ -134,16 +149,7 @@ class AppTheme {
       highlightColor: Colors.transparent,
       hoverColor: Colors.transparent,
       focusColor: Colors.transparent,
-      pageTransitionsTheme: const PageTransitionsTheme(
-        builders: {
-          TargetPlatform.android: _NoPageTransitionBuilder(),
-          TargetPlatform.iOS: _NoPageTransitionBuilder(),
-          TargetPlatform.macOS: _NoPageTransitionBuilder(),
-          TargetPlatform.windows: _NoPageTransitionBuilder(),
-          TargetPlatform.linux: _NoPageTransitionBuilder(),
-          TargetPlatform.fuchsia: _NoPageTransitionBuilder(),
-        },
-      ),
+      pageTransitionsTheme: _noPageTransitions,
       appBarTheme: const AppBarTheme(
         backgroundColor: Colors.white,
         surfaceTintColor: Colors.transparent,
@@ -295,6 +301,7 @@ class AppTheme {
     return ThemeData(
       colorScheme: scheme,
       useMaterial3: true,
+      pageTransitionsTheme: _noPageTransitions,
       scaffoldBackgroundColor: canvas,
       canvasColor: canvas,
       appBarTheme: AppBarTheme(

@@ -1,6 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart'
+    show ExternalLibrary;
 import 'package:http/http.dart' as http;
 
 import '../src/rust/api.dart' as rust;
@@ -128,9 +131,7 @@ class RustBackendTransport implements BackendTransport {
       // that built this transport. That is what keeps `ApiClient` injectable:
       // a Dart test that replaces `http.Client` through `http.runWithClient`
       // still drives the same request surface before the core is up.
-      _httpFallback = HttpBackendTransport(
-        baseUrl: 'http://127.0.0.1:$port',
-      );
+      _httpFallback = HttpBackendTransport(baseUrl: 'http://127.0.0.1:$port');
 
   /// Listener port used when the caller does not supply one.
   ///
@@ -158,7 +159,28 @@ class RustBackendTransport implements BackendTransport {
   bool _coreRunning = false;
 
   /// Loads the bridge runtime once per process.
-  static Future<void> ensureRuntime() => _runtimeReady ??= RustLib.init();
+  ///
+  /// macOS port: the generated loader resolves its `ioDirectory`
+  /// (`rust/target/release/`) against the process working directory, which is
+  /// `/` when the app is launched from Finder. Load the core from the app
+  /// bundle instead when it is there; fall back to the generated loader for
+  /// development and tests.
+  static Future<void> ensureRuntime() => _runtimeReady ??= _initRuntime();
+
+  static Future<void> _initRuntime() async {
+    if (Platform.isMacOS) {
+      final executableDir = File(Platform.resolvedExecutable).parent;
+      for (final candidate in <String>[
+        '${executableDir.parent.path}/Frameworks/libfqapi_core.dylib',
+        '${executableDir.path}/libfqapi_core.dylib',
+      ]) {
+        if (File(candidate).existsSync()) {
+          return RustLib.init(externalLibrary: ExternalLibrary.open(candidate));
+        }
+      }
+    }
+    return RustLib.init();
+  }
 
   /// Records that the runtime is already initialized, for hosts that load the
   /// shared library themselves (the host integration test opens an explicit
@@ -166,6 +188,7 @@ class RustBackendTransport implements BackendTransport {
   static void markRuntimeReady() {
     _runtimeReady ??= Future<void>.value();
   }
+
   final HttpBackendTransport _httpFallback;
 
   @override

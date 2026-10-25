@@ -1,5 +1,9 @@
 fn main() {
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+    // The desktop CENC decrypt core is built for the Windows and macOS desktop
+    // ports. Android ships the same C sources through its Gradle/CMake JNI
+    // library, so it must stay out of the Rust cdylib there.
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os != "windows" && target_os != "macos" {
         return;
     }
     let sources = [

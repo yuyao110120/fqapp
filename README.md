@@ -74,7 +74,7 @@
 
 <details><summary><b>需要注册或付费吗？有 iOS 版吗？</b></summary>
 
-不用注册也不用付费，App 里没有任何登录和支付功能。没有 iOS 版，目前只有安卓。
+不用注册也不用付费，App 里没有任何登录和支付功能。没有 iOS 版，目前提供安卓版和桌面版（Windows / macOS，见各自文档）。
 
 </details>
 
@@ -96,6 +96,6 @@ App 里也有入口：「设置 → 关于 → 支持作者」。
 
 ---
 
-**电脑版** [Windows 桌面版](WINDOWS.md) ｜ **开发者** [编译与开发](DEVELOPMENT.md) ｜ [如何反馈](CONTRIBUTING.md) ｜ **许可** [GPL-3.0](LICENSE)，Copyright (C) 2026 ch6vip ｜ **致谢** [LINUX DO](https://linux.do/)
+**电脑版** [Windows 桌面版](WINDOWS.md) ｜ [macOS 版](MACOS.md) ｜ **开发者** [编译与开发](DEVELOPMENT.md) ｜ [如何反馈](CONTRIBUTING.md) ｜ **许可** [GPL-3.0](LICENSE)，Copyright (C) 2026 ch6vip ｜ **致谢** [LINUX DO](https://linux.do/)
 
 <a href="https://www.star-history.com/?repos=ch6vip%2Ffqapp&type=date&legend=top-left"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ch6vip/fqapp&type=date&theme=dark&legend=top-left" /><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ch6vip/fqapp&type=date&legend=top-left" /><img alt="Star History" src="https://api.star-history.com/chart?repos=ch6vip/fqapp&type=date&legend=top-left" /></picture></a>
