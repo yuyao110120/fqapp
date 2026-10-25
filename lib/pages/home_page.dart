@@ -170,6 +170,7 @@ class _HomePageState extends ConsumerState<HomePage> {
         .kind;
     return state.items.where((item) => item.kind == kind).toList();
   }
+
   /// 当前分类的区块，或空表示这份 `cells` 不属于这里。
   ///
   /// 归属由数据自己声明（[HomeState.cellsTabIndex]），不再靠页面猜：上游曾把
@@ -311,16 +312,17 @@ class _HomePageState extends ConsumerState<HomePage> {
   /// `isLoadMore` / `error` / `hasMore`, which flip on every pagination cycle —
   /// exactly the rebuilds the cache exists to short-circuit.
   List<Widget>? _blockBodySlivers(HomeState state, double gridWidth) {
-    // 每个书城分类都渲染自己那份 `cell_data`（官方 `m0` 对 `tab_type` 一视
-    // 同仁地建区块），所以这里不再只放行「推荐」。没带区块的分类照旧落到
-    // 下面的旧管线，不会被空掉。
+    // 只有「推荐」tab 用上游区块版式。顶栏的六个分类是本地表驱动的，上游
+    // `cell_data` 是按它自己的 11 项表下发的；对本地分类经常回成推荐/榜单
+    // 版式，用户看到的就是「点听书后显示的是推荐页」。其余分类固定走下面的
+    // 卡片网格管线（正在加载时由 _contentSlivers 先画骨架，避免版式闪一下）。
+    if (state.tabIndex != 0) return null;
     final cells = _cellsOfCurrentTab(state);
     if (cells.isEmpty) return null;
     registerDefaultHomeCells(
       onOpenRankBoard: _openRanks,
       loadBoard: _loadRankPreview,
     );
-
     final scaler = MediaQuery.textScalerOf(context);
     final titleScale = scaler.scale(14);
     final metaScale = scaler.scale(12);
@@ -387,6 +389,18 @@ class _HomePageState extends ConsumerState<HomePage> {
   }
 
   List<Widget> _contentSlivers(HomeState state, double gridWidth) {
+    // A non-recommendation category resolves to the upstream block layout, but
+    // the legacy spotlight+grid fallback paints first while that block response
+    // is in flight, so the tab visibly flips layouts once the response lands
+    // (the "听书 flashes then shows the recommendation layout" report). While
+    // the tab's own block structure is still unknown, keep the skeleton up so
+    // the page does not paint a layout it is about to replace.
+    final blockLayoutPending =
+        state.isLoading &&
+        (state.cells.isEmpty || state.cellsTabIndex != state.tabIndex);
+    if (state.tabIndex != 0 && blockLayoutPending) {
+      return const [SliverToBoxAdapter(child: HomeSkeleton())];
+    }
     final blocks = _blockSlivers(state, gridWidth);
     if (blocks != null) return blocks;
     final items = _visibleItems(state);
@@ -500,7 +514,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     _gridMetaScale = metaScale;
     final cardWidth = homeCardWidth(context, gridWidth);
     return _gridSliver = SliverPadding(
-      padding: const EdgeInsets.symmetric(horizontal: _gridPadding),
+      padding: EdgeInsets.symmetric(horizontal: _gridPadding),
       sliver: SliverGrid(
         gridDelegate: homeGridDelegate(context, gridWidth),
         delegate: SliverChildBuilderDelegate((context, index) {

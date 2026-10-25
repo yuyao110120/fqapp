@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/home_cell.dart';
 import '../models/media_item.dart';
 import '../services/api_client.dart';
+import '../services/app_log.dart';
 import '../services/backend_transport.dart';
 import '../services/home_feed_cache.dart';
 import '../services/user_facing_error.dart';
@@ -350,13 +351,28 @@ class HomeNotifier extends Notifier<HomeState> {
     int? tabIndex,
     int offset = 0,
     String? sessionId,
-  }) => _indexedHomepageLoader(
-    tabType: tabType,
-    offset: offset,
-    sessionId: sessionId,
-    tabIndex: tabIndex ?? state.tabIndex,
-    lastTabIndex: _lastTabIndex,
-  );
+  }) async {
+    final resolvedTabIndex = tabIndex ?? state.tabIndex;
+    AppLog.d(
+      'home-req',
+      'tabType=$tabType tabIndex=$resolvedTabIndex last=$_lastTabIndex '
+          'offset=$offset',
+    );
+    final page = await _indexedHomepageLoader(
+      tabType: tabType,
+      offset: offset,
+      sessionId: sessionId,
+      tabIndex: resolvedTabIndex,
+      lastTabIndex: _lastTabIndex,
+    );
+    AppLog.d(
+      'home-res',
+      'tabType=$tabType tabIndex=$resolvedTabIndex cells=${page.cells.length} '
+          'items=${page.items.length} tabs=${page.tabs.length} '
+          'cellNames=${page.cells.take(3).map((c) => c.name).toList()}',
+    );
+    return page;
+  }
 
   final HomeFeedCache? _feedCache;
   final int initialTabIndex;
@@ -597,6 +613,7 @@ class HomeNotifier extends Notifier<HomeState> {
     if (index == state.tabIndex || index < 0 || index >= limit) return;
     // 记住切换前的位置：下一次加载要把它当 `last_tab_index` 交给上游，
     // 上游据此知道用户是从哪个分类过来的。
+    AppLog.d('home-tab', 'select index=$index from ${state.tabIndex}');
     _lastTabIndex = state.tabIndex;
     ++_generation;
     _activeRequest?.cancel();
@@ -730,10 +747,7 @@ class HomeNotifier extends Notifier<HomeState> {
     Object? loaderFailure;
     if (tabType != null) {
       try {
-        final page = await _fetchHomepage(
-          tabType: tabType,
-
-        );
+        final page = await _fetchHomepage(tabType: tabType);
         final items = _forceKind(page.items, kind);
         final nextOffset = page.nextOffset;
         final canAdvance = nextOffset != null && nextOffset > 0;
@@ -896,10 +910,7 @@ class HomeNotifier extends Notifier<HomeState> {
   /// after the first.
   Future<_AllManjuGroup> _loadAllManju() async {
     try {
-      final page = await _fetchHomepage(
-        tabType: tabTypes['漫剧']!,
-
-      );
+      final page = await _fetchHomepage(tabType: tabTypes['漫剧']!);
       final items = _forceKind(page.items, 'manju');
       if (items.isNotEmpty) {
         return (
