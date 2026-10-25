@@ -33,10 +33,7 @@ pub fn match_rest_path(path: &str, query: &Params) -> Option<RouteMatch> {
         "books" => match_books(tail, query),
         "novels" => match_novels(tail, query),
         "search" => match_search(tail, query),
-        "category" => Some(RouteMatch {
-            api: "category_front",
-            params: query.clone(),
-        }),
+        "category" => match_category(tail, query),
         "audio" => match_audio(tail, query),
         "authors" => match_authors(tail, query),
         "manga" => match_manga(tail, query),
@@ -53,6 +50,21 @@ pub fn match_rest_path(path: &str, query: &Params) -> Option<RouteMatch> {
         }),
         _ => None,
     }
+}
+
+/// /api/v1/category is the front page; /api/v1/category/books is the
+/// per-tag book list added by the macOS port (see search::category_books).
+fn match_category(parts: &[&str], q: &Params) -> Option<RouteMatch> {
+    if parts.first() == Some(&"books") {
+        return Some(RouteMatch {
+            api: "category_books",
+            params: q.clone(),
+        });
+    }
+    Some(RouteMatch {
+        api: "category_front",
+        params: q.clone(),
+    })
 }
 
 fn match_chapters(parts: &[&str], q: &Params) -> Option<RouteMatch> {

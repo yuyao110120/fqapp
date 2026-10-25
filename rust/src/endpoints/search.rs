@@ -238,9 +238,41 @@ fn category_front<'a>(ctx: &'a Ctx, params: &'a Params) -> BoxFuture<'a, ApiResu
     })
 }
 
+/// Category tag book list (/api/v1/category/books).
+///
+/// The traced official client has no standalone category book-list endpoint:
+/// tapping a tag opens the search stack with the tag name as the query on the
+/// same bookstore tab. Keeping that composition on the backend gives the app a
+/// single stable API for category browsing (and a place to swap in a dedicated
+/// upstream route if one appears).
+fn category_books<'a>(ctx: &'a Ctx, params: &'a Params) -> BoxFuture<'a, ApiResult<Value>> {
+    Box::pin(async move {
+        let mut name = params.get_str("name");
+        if name.is_empty() {
+            name = params.get_str("query");
+        }
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err(ApiError::BadRequest("missing category name".to_string()));
+        }
+        let offset = crate::endpoints::util::default_val(&params.get_str("offset"), "0");
+        let mut p = Params::new();
+        p.set("query", name.clone());
+        p.set("offset", offset.clone());
+        p.set(
+            "count",
+            crate::endpoints::util::default_val(&params.get_str("count"), "10"),
+        );
+        let tab = params.get_str("tab");
+        p.set("tab_type", crate::endpoints::util::default_val(&tab, "2"));
+        search_reading(ctx, &name, &offset, &p).await
+    })
+}
+
 pub fn register(s: &mut Server) {
     s.add_route("search", handle);
     s.add_route("search_cue", search_cue);
     s.add_route("hot_search", hot_search);
     s.add_route("category_front", category_front);
+    s.add_route("category_books", category_books);
 }

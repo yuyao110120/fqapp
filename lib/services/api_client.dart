@@ -393,6 +393,41 @@ class ApiClient {
     );
   }
 
+  /// Books for one category tag, through the Rust backend's
+  /// /api/v1/category/books route (which composes the search stack upstream).
+  Future<List<MediaItem>> categoryBooks(
+    String name, {
+    int tab = 1,
+    int offset = 0,
+    int count = 10,
+  }) async {
+    final r = await _get(
+      _url('/api/v1/category/books', {
+        'name': name,
+        'tab': '$tab',
+        'offset': '$offset',
+        'count': '$count',
+      }),
+      timeout: const Duration(seconds: 15),
+    );
+    final statusCode = r.statusCode;
+    final bodyBytes = r.bodyBytes;
+    return Isolate.run(() {
+      final payload = _decodeEnvelope(statusCode, bodyBytes);
+      final tabs = parseSearchTabs(payload);
+      final seen = <String>{};
+      final items = <MediaItem>[];
+      for (final tab in tabs) {
+        for (final item in tab.items) {
+          if (item.id.isNotEmpty && seen.add('${item.kind}:${item.id}')) {
+            items.add(item);
+          }
+        }
+      }
+      return items;
+    });
+  }
+
   // Note: ID 识别、精确匹配与目录回退见 .agents/notes/implemented/feature/2026-09-10-id-search.md
   Future<MediaItem?> lookupMediaById(String input) async {
     final id = input.trim();

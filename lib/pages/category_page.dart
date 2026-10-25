@@ -5,6 +5,7 @@ import '../models/category_front.dart';
 import '../services/api_client.dart';
 import '../services/desktop_platform.dart';
 import '../widgets/home/home_design.dart';
+import 'category_books_page.dart';
 
 /// 官方分类页（`BookCategoryActivity`，7.0.9.32 实测形态）：
 ///
@@ -63,11 +64,9 @@ const int _chipMinColumns = 3;
 const int _chipMaxColumns = 10;
 
 /// 按内容区可用宽度（已扣掉左右 padding）算列数。
-int _chipColumnsFor(double contentWidth) =>
-    (contentWidth / _chipTargetWidth).floor().clamp(
-      _chipMinColumns,
-      _chipMaxColumns,
-    );
+int _chipColumnsFor(double contentWidth) => (contentWidth / _chipTargetWidth)
+    .floor()
+    .clamp(_chipMinColumns, _chipMaxColumns);
 
 class _CategoryPageState extends State<CategoryPage> {
   CategoryFront? _front;
@@ -112,7 +111,17 @@ class _CategoryPageState extends State<CategoryPage> {
       _loading = true;
       _error = null;
     });
-    final front = await _fetch(tab: target);
+    late final CategoryFront front;
+    try {
+      front = await _fetch(tab: target);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = '分类加载失败，请稍后重试';
+      });
+      return;
+    }
     if (!mounted) return;
     setState(() {
       _loading = false;
@@ -133,9 +142,7 @@ class _CategoryPageState extends State<CategoryPage> {
   /// 官方该组是跨 dim 精选，数据不可得，用全量保内容），其余 dim 各一组，
   /// 空组跳过。游离 dim 的瓦片只出现在首组。
   static List<_Section> _sectionsFor(CategoryFront front) {
-    final out = <_Section>[
-      _Section('热门标签', front.tiles),
-    ];
+    final out = <_Section>[_Section('热门标签', front.tiles)];
     for (final dim in front.dims) {
       if (dim.value == '0') continue;
       final tiles = front.tiles.where((t) => t.dim == dim.value).toList();
@@ -178,13 +185,16 @@ class _CategoryPageState extends State<CategoryPage> {
   void _scrollToSection(int index) {
     if (!_scroll.hasClients) return;
     setState(() => _selected = index);
-    final target = _sectionOffset(index)
-        .clamp(0.0, _scroll.position.maxScrollExtent)
-        .toDouble();
+    final target = _sectionOffset(
+      index,
+    ).clamp(0.0, _scroll.position.maxScrollExtent).toDouble();
     _programmaticScroll = true;
     _scroll
-        .animateTo(target, duration: const Duration(milliseconds: 300),
-            curve: Curves.ease)
+        .animateTo(
+          target,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.ease,
+        )
         .whenComplete(() {
           _programmaticScroll = false;
           if (mounted && _selected != index) {
@@ -197,6 +207,18 @@ class _CategoryPageState extends State<CategoryPage> {
     setState(() {
       if (!_expanded.remove(index)) _expanded.add(index);
     });
+  }
+
+  /// Tapping a tag opens its book list through the Rust backend's
+  /// /api/v1/category/books route.
+  void _openTile(CategoryTile tile) {
+    if (tile.name.isEmpty) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => CategoryBooksPage(name: tile.name, tab: _tabValue),
+      ),
+    );
   }
 
   @override
@@ -220,7 +242,9 @@ class _CategoryPageState extends State<CategoryPage> {
                 child: CircularProgressIndicator(color: HomePalette.accent),
               )
             else if (_error != null)
-              Expanded(child: _ErrorView(message: _error!, onRetry: _load))
+              Expanded(
+                child: _ErrorView(message: _error!, onRetry: _load),
+              )
             else if (front != null)
               Expanded(
                 // 列数按实际内容区宽度算：手机仍是官方三列，桌面按 170dp
@@ -279,7 +303,11 @@ class _TopBar extends StatelessWidget {
           else
             IconButton(
               key: const Key('category_back'),
-              icon: Icon(LucideIcons.chevron_left, size: 24, color: palette.ink),
+              icon: Icon(
+                LucideIcons.chevron_left,
+                size: 24,
+                color: palette.ink,
+              ),
               onPressed: () => Navigator.maybePop(context),
             ),
           Expanded(
@@ -391,9 +419,7 @@ class _SectionList extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: palette.canvas,
-        borderRadius: const BorderRadius.horizontal(
-          left: Radius.circular(12),
-        ),
+        borderRadius: const BorderRadius.horizontal(left: Radius.circular(12)),
       ),
       clipBehavior: Clip.antiAlias,
       child: ListView.builder(
@@ -443,11 +469,9 @@ class _SectionView extends StatelessWidget {
         ),
         for (var i = 0; i < visible.length; i += columns)
           _ChipRow(
-            tiles: visible.sublist(
-              i,
-              (i + columns).clamp(0, visible.length),
-            ),
+            tiles: visible.sublist(i, (i + columns).clamp(0, visible.length)),
             columns: columns,
+            onTap: state._openTile,
           ),
       ],
     );
@@ -516,10 +540,15 @@ class _SectionHeader extends StatelessWidget {
 /// 就是三列；桌面按宽度加列）。不足 [columns] 颗的尾行用同权 Spacer 补位，
 /// 保持前几颗不抢宽。列距 7dp。
 class _ChipRow extends StatelessWidget {
-  const _ChipRow({required this.tiles, required this.columns});
+  const _ChipRow({
+    required this.tiles,
+    required this.columns,
+    required this.onTap,
+  });
 
   final List<CategoryTile> tiles;
   final int columns;
+  final ValueChanged<CategoryTile> onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -529,7 +558,7 @@ class _ChipRow extends StatelessWidget {
       cells.add(
         Expanded(
           child: i < tiles.length
-              ? _CategoryChip(tile: tiles[i])
+              ? _CategoryChip(tile: tiles[i], onTap: () => onTap(tiles[i]))
               : const SizedBox(),
         ),
       );
@@ -542,31 +571,39 @@ class _ChipRow extends StatelessWidget {
 /// 圆角 6dp、底 #ECECEC、上下边距 6/4；内容水平居中，热门项左侧 16dp
 /// 近黑火苗（真机像素取证：官方火苗非橙，与文字同色系）。
 class _CategoryChip extends StatelessWidget {
-  const _CategoryChip({required this.tile});
+  const _CategoryChip({required this.tile, required this.onTap});
 
   final CategoryTile tile;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final palette = HomePalette.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(top: 6, bottom: 4),
-      child: Container(
-        key: ValueKey('category_tile_${tile.id}_${tile.name}'),
-        height: 30,
-        decoration: BoxDecoration(
-          color: palette.dark ? palette.soft : const Color(0xFFECECEC),
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            if (tile.hot) ...[
-              Icon(LucideIcons.flame, size: 16, color: palette.ink),
-              const SizedBox(width: 2),
+    return GestureDetector(
+      key: ValueKey('category_tile_${tile.id}_${tile.name}'),
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Padding(
+        padding: const EdgeInsets.only(top: 6, bottom: 4),
+        child: Container(
+          height: 30,
+          decoration: BoxDecoration(
+            color: palette.dark ? palette.soft : const Color(0xFFECECEC),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (tile.hot) ...[
+                Icon(LucideIcons.flame, size: 16, color: palette.ink),
+                const SizedBox(width: 2),
+              ],
+              Text(
+                tile.name,
+                style: TextStyle(fontSize: 14, color: palette.ink),
+              ),
             ],
-            Text(tile.name, style: TextStyle(fontSize: 14, color: palette.ink)),
-          ],
+          ),
         ),
       ),
     );
