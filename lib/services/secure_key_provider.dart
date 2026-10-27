@@ -138,8 +138,19 @@ class KeychainThenFileStorage implements SecureKeyStorage {
 /// validate `keychain-access-groups`, and transparently falls back to the
 /// sandbox-private key file for ad-hoc local builds. All other platforms keep
 /// using flutter_secure_storage directly.
+/// True while running under `flutter test`.
+///
+/// Widget tests run on the host platform (macOS on a Mac), so a plain platform
+/// check would pick the macOS Keychain+file fallback there. The file fallback
+/// performs real async I/O, whose 10s storage-timeout timer outlives the fake
+/// test clock and trips "A Timer is still pending" at teardown. Keep tests on
+/// the regular MethodChannel backend, which fails fast when unmocked — the
+/// same path other CI platforms already take.
+bool get _runningInFlutterTest =>
+    Platform.environment['FLUTTER_TEST'] == 'true';
+
 SecureKeyStorage defaultSecureKeyStorage() {
-  if (!kIsWeb && Platform.isMacOS) {
+  if (!kIsWeb && Platform.isMacOS && !_runningInFlutterTest) {
     return KeychainThenFileStorage();
   }
   return const FlutterSecureKeyStorage();
