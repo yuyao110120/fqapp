@@ -580,12 +580,12 @@ class _CategoryChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette = HomePalette.of(context);
     return GestureDetector(
-      key: ValueKey('category_tile_${tile.id}_${tile.name}'),
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
       child: Padding(
         padding: const EdgeInsets.only(top: 6, bottom: 4),
         child: Container(
+          key: ValueKey('category_tile_${tile.id}_${tile.name}'),
           height: 30,
           decoration: BoxDecoration(
             color: palette.dark ? palette.soft : const Color(0xFFECECEC),
