@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../models/audio_extra.dart';
@@ -650,6 +652,234 @@ class AudioSubtitleView extends StatelessWidget {
   }
 }
 
+/// 桌面端「同步字幕」列表：跟着朗读进度自动滚动，并把当前句高亮出来。
+///
+/// 以前这里是 `ListView.builder` + `selected:`：高亮确实会跟着进度走，但列表
+/// 永远停在开头 —— 念到第 80 句时用户还看着第 1 句，只能自己一路往下滚，看起来
+/// 就是「字幕不跟随朗读」。现在当前句一变就把它滚进可视区（略偏上，下一句也看
+/// 得见），并加一条左侧强调色细线，滚动中也能一眼认出念到哪。
+///
+/// 只滚这一条列表，不用 `Scrollable.ensureVisible`：那个会把外面 `TabBarView`
+/// 的横向 `PageView` 也算进来，切句时会顺手拨一下标签页。
+class AudioSubtitleList extends StatefulWidget {
+  const AudioSubtitleList({
+    super.key,
+    required this.track,
+    required this.active,
+    this.onSeek,
+  });
+
+  final SubtitleTrack track;
+
+  /// 当前句下标，`-1` 表示还没念到第一句。
+  final int active;
+
+  /// 点某一句跳过去（参数是这一句的起始毫秒）；null 表示还没就绪。
+  final ValueChanged<int>? onSeek;
+
+  @override
+  State<AudioSubtitleList> createState() => _AudioSubtitleListState();
+}
+
+class _AudioSubtitleListState extends State<AudioSubtitleList> {
+  final _controller = ScrollController();
+
+  /// 只为已经构建出来的行留 key：`ListView.builder` 会回收视图外的行，那些行
+  /// 没有 context，也就无从 `ensureVisible`。
+  final _rowKeys = <int, GlobalKey>{};
+
+  /// 用户刚自己滚过之后开着的计时器。跟随是默认行为，但不该跟手动滚动抢
+  /// 方向盘；用 `Timer` 而不是记一个 `DateTime.now()` 截止点，`tester.pump()`
+  /// 才能把这段窗口推过去。
+  Timer? _hold;
+
+  /// 暂停跟随期间换到的句子：等暂停结束要补一次，否则这一句永远不出现。
+  int? _pending;
+
+  static const _holdWindow = Duration(seconds: 4);
+
+  /// 看引用而不是 `Timer.isActive`：计时器在自己的回调里跑的时候 `isActive`
+  /// 还是 true，用它会把自己认成「暂停中」。
+  bool get _holding => _hold != null;
+
+  @override
+  void initState() {
+    super.initState();
+    // 打开面板时可能已经念到中段：先落一次位，不用等下一句才跳。
+    if (widget.active >= 0) _reveal(widget.active);
+  }
+
+  @override
+  void dispose() {
+    _hold?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(AudioSubtitleList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 只在「换句」时动，不是每次位置回调（5Hz）都动。
+    if (widget.active >= 0 && widget.active != oldWidget.active) {
+      _reveal(widget.active);
+    }
+  }
+
+  bool _onScroll(ScrollNotification notification) {
+    // 桌面端的主要输入是滚轮/触控板，走 `pointerScroll`：它和拖拽一样会
+    // `updateUserScrollDirection`，但它的 `ScrollStartNotification` 没有
+    // `dragDetails`（那个只有 `DragScrollActivity` 才给）。所以看滚动方向 ——
+    // 我们自己发起的 `jumpTo`/`animateTo` 不会更新方向，最多顺带发一个
+    // `idle`，不会把暂停重新打开。
+    if (notification is UserScrollNotification &&
+        notification.direction != ScrollDirection.idle) {
+      _hold?.cancel();
+      _hold = Timer(_holdWindow, _onHoldExpired);
+    }
+    return false;
+  }
+
+  void _onHoldExpired() {
+    _hold = null;
+    final pending = _pending;
+    _pending = null;
+    if (pending != null) _reveal(pending);
+  }
+
+  void _reveal(int index) {
+    if (_holding) {
+      _pending = index;
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_controller.hasClients) return;
+      if (_holding) {
+        _pending = index;
+        return;
+      }
+      final row = _rowKeys[index]?.currentContext;
+      if (row != null) {
+        _scrollTo(row);
+        return;
+      }
+      // 跳得很远时目标行还没构建：先按比例落到大概位置，再逐帧精确对位。
+      _jumpByRatio(index);
+      _revealWithin(index, 4);
+    });
+    // 暂停跟随靠计时器结束，那时未必还有帧在跑（比如播放已暂停），只把回调
+    // 排上队没人来跑它 —— 把帧叫醒。
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  /// 粗定位之后的逐帧纠正：目标行一出现就精确对位，最多试 [frames] 帧就放弃。
+  ///
+  /// 一次纠正不够：`maxScrollExtent` 是按已构建行外推的，字幕行高 48–100px
+  /// 不等，比例落点可能偏出一屏以上，那一帧目标行的 key 还是 null，之后就再
+  /// 没有机会了。每帧重算一次比例落点，因为落位后已构建的行更接近真值。
+  void _revealWithin(int index, int frames) {
+    if (frames <= 0) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_controller.hasClients) return;
+      if (_holding) {
+        _pending = index;
+        return;
+      }
+      final row = _rowKeys[index]?.currentContext;
+      if (row != null) {
+        _scrollTo(row);
+      } else {
+        _jumpByRatio(index);
+        _revealWithin(index, frames - 1);
+      }
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void _jumpByRatio(int index) {
+    final cues = widget.track.cues.length;
+    final ratio = cues <= 1 ? 0.0 : index / (cues - 1);
+    final position = _controller.position;
+    _controller.jumpTo(
+      (position.maxScrollExtent * ratio).clamp(0.0, position.maxScrollExtent),
+    );
+  }
+
+  void _scrollTo(BuildContext row) {
+    final object = row.findRenderObject();
+    if (object == null || !_controller.hasClients) return;
+    unawaited(
+      _controller.position.ensureVisible(
+        object,
+        // 0.32：当前句偏上留白，下一句、下下句都在视野里，读起来不跳。
+        alignment: 0.32,
+        duration: MediaQuery.disableAnimationsOf(row)
+            ? Duration.zero
+            : const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = HomePalette.of(context);
+    final cues = widget.track.cues;
+    return NotificationListener<ScrollNotification>(
+      onNotification: _onScroll,
+      // `Ink` 把图案登记到最近的 Material 上，而 Material 只按自己的尺寸裁：
+      // 页面级 Material 跟整页一样大，半滚出视口的那一行就会把底色和左侧细线
+      // 画到列表上方（TabBar）去。这里垫一层列表自己的透明 Material，让高亮
+      // 画进列表的盒子；保留 Material 祖先，ListTile 的涟漪断言也不会响。
+      child: Material(
+        type: MaterialType.transparency,
+        child: ListView.builder(
+          key: const Key('audio_subtitle_list'),
+          controller: _controller,
+          itemCount: cues.length,
+          itemBuilder: (context, index) {
+            final cue = cues[index];
+            final active = index == widget.active;
+            // 高亮底色与左侧细线用 `Ink` 而不是 `Container`：ListTile 的点按
+            // 涟漪画在最近的 Material 上，中间夹一层带底色的 DecoratedBox 会把
+            // 涟漪整个挡住，框架断言直接拦下（CI 实测过）。`Ink` 把装饰画进
+            // Material 层，涟漪照常浮在上面。
+            return Ink(
+              key: _rowKeys.putIfAbsent(index, GlobalKey.new),
+              decoration: BoxDecoration(
+                color: active
+                    ? HomePalette.accent.withValues(alpha: 0.10)
+                    : Colors.transparent,
+                border: Border(
+                  left: BorderSide(
+                    width: 3,
+                    color: active ? HomePalette.accent : Colors.transparent,
+                  ),
+                ),
+              ),
+              child: ListTile(
+                dense: true,
+                selected: active,
+                title: Text(
+                  cue.text,
+                  key: ValueKey('audio_subtitle_row_$index'),
+                  style: TextStyle(
+                    fontSize: 14,
+                    height: 1.5,
+                    fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                    color: active ? palette.ink : palette.muted,
+                  ),
+                ),
+                onTap: widget.onSeek == null
+                    ? null
+                    : () => widget.onSeek!(cue.startMs),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
 /// One entry in the icon action row.
 class AudioAction {
   const AudioAction({

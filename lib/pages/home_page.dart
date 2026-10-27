@@ -8,8 +8,10 @@ import '../models/home_cell.dart';
 import '../models/media_item.dart';
 import '../models/search_discovery.dart';
 import '../services/api_client.dart';
+import '../services/app_log.dart';
 import '../services/book_open_preferences.dart';
 import '../services/chapter_cache_store.dart';
+import '../services/home_page_affinity.dart';
 import '../services/library_store.dart';
 import '../widgets/home/home_cell_blocks.dart';
 import '../widgets/home/home_cell_renderers.dart';
@@ -21,6 +23,7 @@ import '../widgets/home/home_skeleton.dart';
 import '../widgets/home/home_resume_card.dart';
 import '../widgets/home/home_spotlight.dart';
 import '../widgets/home/home_tab_bar.dart';
+import '../widgets/tab_swipe_area.dart';
 import 'category_page.dart';
 import 'detail_page.dart';
 import 'cached_book_reader.dart';
@@ -105,6 +108,9 @@ class _HomePageState extends ConsumerState<HomePage> {
   double? _blocksWidth;
   double? _blocksTitleScale;
   double? _blocksMetaScale;
+
+  /// Last logged render shape; keeps the diagnostic to one line per change.
+  String? _loggedShape;
 
   @override
   void initState() {
@@ -197,6 +203,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     final state = ref.watch(homeProvider);
     final notifier = ref.read(homeProvider.notifier);
     final palette = HomePalette.of(context);
+    final categories = _categoriesOf(state);
     final textScale = MediaQuery.textScalerOf(context).scale(16) / 16;
     return Scaffold(
       backgroundColor: palette.canvas,
@@ -226,40 +233,45 @@ class _HomePageState extends ConsumerState<HomePage> {
                     // Measuring once here keeps the grid out of the scroll
                     // path completely.
                     child: LayoutBuilder(
-                      builder: (context, constraints) => CustomScrollView(
-                        key: const Key('home_feed'),
-                        controller: _scroll,
-                        physics: const BouncingScrollPhysics(
-                          parent: AlwaysScrollableScrollPhysics(),
+                      builder: (context, constraints) => TabSwipeArea(
+                        index: state.tabIndex,
+                        count: categories.length,
+                        onSelect: notifier.selectTab,
+                        child: CustomScrollView(
+                          key: const Key('home_feed'),
+                          controller: _scroll,
+                          physics: const BouncingScrollPhysics(
+                            parent: AlwaysScrollableScrollPhysics(),
+                          ),
+                          slivers: [
+                            SliverToBoxAdapter(
+                              child: HomeHero(
+                                onSearch: _openSearch,
+                                onCategory: _openCategory,
+                                cueLoader: widget.cueLoader,
+                              ),
+                            ),
+                            SliverPersistentHeader(
+                              pinned: true,
+                              delegate: HomeTabBarDelegate(
+                                selectedIndex: state.tabIndex,
+                                onSelect: notifier.selectTab,
+                                categories: categories,
+                                extent:
+                                    HomeTabBarDelegate.barHeight +
+                                    HomeTabBarDelegate.bottomPadding +
+                                    (textScale - 1).clamp(0, 2) * 16,
+                                dark: palette.dark,
+                                eink: palette.eink,
+                                oled: palette.oled,
+                              ),
+                            ),
+                            ..._contentSlivers(
+                              state,
+                              constraints.maxWidth - _gridPadding * 2,
+                            ),
+                          ],
                         ),
-                        slivers: [
-                          SliverToBoxAdapter(
-                            child: HomeHero(
-                              onSearch: _openSearch,
-                              onCategory: _openCategory,
-                              cueLoader: widget.cueLoader,
-                            ),
-                          ),
-                          SliverPersistentHeader(
-                            pinned: true,
-                            delegate: HomeTabBarDelegate(
-                              selectedIndex: state.tabIndex,
-                              onSelect: notifier.selectTab,
-                              categories: _categoriesOf(state),
-                              extent:
-                                  HomeTabBarDelegate.barHeight +
-                                  HomeTabBarDelegate.bottomPadding +
-                                  (textScale - 1).clamp(0, 2) * 16,
-                              dark: palette.dark,
-                              eink: palette.eink,
-                              oled: palette.oled,
-                            ),
-                          ),
-                          ..._contentSlivers(
-                            state,
-                            constraints.maxWidth - _gridPadding * 2,
-                          ),
-                        ],
                       ),
                     ),
                   ),
@@ -312,17 +324,16 @@ class _HomePageState extends ConsumerState<HomePage> {
   /// `isLoadMore` / `error` / `hasMore`, which flip on every pagination cycle —
   /// exactly the rebuilds the cache exists to short-circuit.
   List<Widget>? _blockBodySlivers(HomeState state, double gridWidth) {
-    // 只有「推荐」tab 用上游区块版式。顶栏的六个分类是本地表驱动的，上游
-    // `cell_data` 是按它自己的 11 项表下发的；对本地分类经常回成推荐/榜单
-    // 版式，用户看到的就是「点听书后显示的是推荐页」。其余分类固定走下面的
-    // 卡片网格管线（正在加载时由 _contentSlivers 先画骨架，避免版式闪一下）。
-    if (state.tabIndex != 0) return null;
+    // 每个书城分类都渲染自己那份 `cell_data`（官方 `m0` 对 `tab_type` 一视
+    // 同仁地建区块），所以这里不再只放行「推荐」。没带区块的分类照旧落到
+    // 下面的旧管线，不会被空掉。
     final cells = _cellsOfCurrentTab(state);
     if (cells.isEmpty) return null;
     registerDefaultHomeCells(
       onOpenRankBoard: _openRanks,
       loadBoard: _loadRankPreview,
     );
+
     final scaler = MediaQuery.textScalerOf(context);
     final titleScale = scaler.scale(14);
     final metaScale = scaler.scale(12);
@@ -384,24 +395,35 @@ class _HomePageState extends ConsumerState<HomePage> {
         rendered = true;
       }
     }
-    if (!rendered) return null;
+    if (!rendered) {
+      // 这份 `cells` 一个块都没画出来（听书的 337、老后端的未知类型…）：
+      // **必须把缓存清掉**。`_blocksCells` 已经在上面改成了这份列表，
+      // 若把 `_blocksBody`（上上个分类建的那套 widget）留着，下一次带着
+      // **同一份列表实例**的重建就会命中缓存、把上一个分类的排行榜/猜你喜欢
+      // 画到当前分类上——真机上「听书第二次加载变成推荐」就是这么来的
+      // （日志：`渲染 blocks tab=5 cells=337`。
+      _blocksBody = null;
+      _blocksCells = null;
+      _blocksWidth = null;
+      _blocksTitleScale = null;
+      _blocksMetaScale = null;
+      return null;
+    }
     return _blocksBody = slivers;
   }
 
   List<Widget> _contentSlivers(HomeState state, double gridWidth) {
-    // A non-recommendation category resolves to the upstream block layout, but
-    // the legacy spotlight+grid fallback paints first while that block response
-    // is in flight, so the tab visibly flips layouts once the response lands
-    // (the "听书 flashes then shows the recommendation layout" report). While
-    // the tab's own block structure is still unknown, keep the skeleton up so
-    // the page does not paint a layout it is about to replace.
-    final blockLayoutPending =
-        state.isLoading &&
-        (state.cells.isEmpty || state.cellsTabIndex != state.tabIndex);
-    if (state.tabIndex != 0 && blockLayoutPending) {
-      return const [SliverToBoxAdapter(child: HomeSkeleton())];
-    }
     final blocks = _blockSlivers(state, gridWidth);
+    // 设备日志：分类页到底画的是区块还是卡片网格、画了多少张。听书出问题时
+    // 这一行直接说明它被画成了哪一种版式。
+    final shape = blocks != null
+        ? 'blocks tab=${state.tabIndex} '
+              'cells=${describeHomeCells(_cellsOfCurrentTab(state))}'
+        : 'grid tab=${state.tabIndex} items=${_visibleItems(state).length}';
+    if (shape != _loggedShape) {
+      _loggedShape = shape;
+      AppLog.d('home', '渲染 $shape');
+    }
     if (blocks != null) return blocks;
     final items = _visibleItems(state);
     if (items.isEmpty) {
@@ -514,7 +536,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     _gridMetaScale = metaScale;
     final cardWidth = homeCardWidth(context, gridWidth);
     return _gridSliver = SliverPadding(
-      padding: EdgeInsets.symmetric(horizontal: _gridPadding),
+      padding: const EdgeInsets.symmetric(horizontal: _gridPadding),
       sliver: SliverGrid(
         gridDelegate: homeGridDelegate(context, gridWidth),
         delegate: SliverChildBuilderDelegate((context, index) {
