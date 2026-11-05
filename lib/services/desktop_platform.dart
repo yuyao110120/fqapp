@@ -111,10 +111,14 @@ class DesktopPlatform with WindowListener {
     final minimumSize = isMacOSPlatform
         ? Size(min(400, available.width), min(560, available.height))
         : Size(min(800, available.width), min(440, available.height));
+    final visible = display.visibleSize ?? display.size;
+    final origin = display.visiblePosition ?? Offset.zero;
     AppLog.d(
       'desktop-window',
-      'display=${display.size} visible=${display.visibleSize} '
-          'preferred=$preferredSize',
+      'display=${display.size.width}x${display.size.height} '
+          'visible=${visible.width}x${visible.height} '
+          'origin=${origin.dx},${origin.dy} '
+          'preferred=${preferredSize.width}x${preferredSize.height}',
     );
     await windowManager.waitUntilReadyToShow(
       WindowOptions(
@@ -128,13 +132,18 @@ class DesktopPlatform with WindowListener {
         await windowManager.focus();
         if (isMacOSPlatform) {
           // macOS may restore the previous frame (or shrink a tall window to
-          // the active screen) after show; re-assert the phone-shaped frame.
+          // the active screen) after show; re-assert the phone-shaped frame and
+          // pin it to the primary display. `center()` follows the key-window
+          // screen, which can be a secondary monitor.
           await windowManager.setSize(preferredSize);
-          await windowManager.center();
-          AppLog.d(
-            'desktop-window',
-            'actual=${await windowManager.getSize()}',
+          final actual = await windowManager.getSize();
+          await windowManager.setPosition(
+            Offset(
+              origin.dx + (visible.width - actual.width) / 2,
+              origin.dy + (visible.height - actual.height) / 2,
+            ),
           );
+          AppLog.d('desktop-window', 'actual=${actual.width}x${actual.height}');
         }
       },
     );
