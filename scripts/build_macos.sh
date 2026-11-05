@@ -2,7 +2,7 @@
 # Builds the macOS desktop app (arm64 or universal, host default) with the Rust
 # core bundled into Contents/Frameworks.
 #
-# Requirements: Xcode command line tools, Flutter 3.44.x (Dart 3.12.x), Rust
+# Requirements: Xcode command line tools, Flutter 3.47.x (Dart 3.13.x), Rust
 # stable, CocoaPods. See MACOS.md for the toolchain and current limitations.
 #
 # Usage:
@@ -40,7 +40,7 @@ for tool in flutter cargo pod; do
   fi
 done
 
-# Flutter 3.44 enables Swift Package Manager by default, but the macOS plugins
+# Flutter 3.44+ enables Swift Package Manager by default, but the macOS plugins
 # used here (flutter_tts / media_kit_video / flutter_secure_storage_macos) do not
 # support it yet. The generated macos/ project uses CocoaPods, so keep the
 # CocoaPods path enabled for this toolchain.

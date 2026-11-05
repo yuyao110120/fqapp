@@ -32,7 +32,7 @@
 | --- | --- |
 | macOS | 12+（当前验证：macOS 27.0.1, Apple Silicon） |
 | Xcode | 支持 macOS 12+ 部署目标；当前验证：Xcode 27.1 |
-| Flutter | 3.44.6 / Dart 3.12.2 |
+| Flutter | 3.47.9 / Dart 3.13.7 |
 | Rust | stable |
 | CocoaPods | 1.16+ |
 | FFmpeg | 仅校验脚本需要 |
@@ -48,7 +48,7 @@ flutter pub get
 `libfqapi_core.dylib` 拷进 `Contents/Frameworks` 并 ad-hoc 签名、做签名自检、生成 zip。
 
 Xcode 27 已不再接受低于 12.0 的 macOS 部署目标，仓库内工程按 `macOS 12.0` 生成。
-当前 Runner/Flutter 脚本固定 `ARCHS = arm64`：Flutter 3.44 在 Xcode 27 上对通用
+当前 Runner/Flutter 脚本固定 `ARCHS = arm64`：Flutter 3.44+ 在 Xcode 27 上对通用
 （x86_64 + arm64）FlutterMacOS.framework 的 `lipo -verify_arch` 调用不兼容，
 Intel/通用二进制支持待后续解决。
 

@@ -71,7 +71,7 @@ git push mine macos
 
 ## CI 与发布
 
-- `.github/workflows/macos.yml`：arm64 macOS runner，Flutter 3.44.6 + Rust stable +
+- `.github/workflows/macos.yml`：arm64 macOS runner，Flutter 3.47.9 + Rust stable +
   CocoaPods，跑 analyze / Rust lib tests / `scripts/build_macos.sh`，上传 zip artifact。
   Runner 需 arm64（本项目固定 `ARCHS=arm64`）。
 - 本地构建、权限与已知限制见 [MACOS.md](MACOS.md)。
