@@ -35,6 +35,11 @@ pub mod upstream;
 
 mod frb_generated;
 
+// Shared CDN range fetch used by the desktop player bridge. It is plain
+// reqwest blocking code, so the macOS port reuses it as-is.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+mod desktop_fetch;
+
 // Desktop player bridge (CENC decrypt via the C core + loopback range serve).
 // Shared by the Windows and macOS desktop ports; Android keeps its JNI bridge
 // in native/android/.

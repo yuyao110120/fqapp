@@ -4,8 +4,12 @@ import 'package:flutter_lucide/flutter_lucide.dart';
 import '../models/category_front.dart';
 import '../services/api_client.dart';
 import '../services/desktop_platform.dart';
+import '../services/user_facing_error.dart';
+import '../widgets/category/category_dim_rail.dart';
 import '../widgets/home/home_design.dart';
 import 'category_books_page.dart';
+import '../widgets/home/home_feed_states.dart';
+import 'search_page.dart';
 
 /// 官方分类页（`BookCategoryActivity`，7.0.9.32 实测形态）：
 ///
@@ -47,9 +51,6 @@ class _Section {
 /// 官方收起态每组只显示前 30 颗（`CollectionsKt.take(_, 30)`）。
 const _collapsedCount = 30;
 
-/// 左侧维度栏宽度（官方 88dp 定值）。
-const double _dimRailWidth = 88;
-
 /// 桌面下每颗 chip 的目标宽度。
 ///
 /// 官方在手机上把内容区 `chunked(3)` 三等分，375dp 屏上每颗约 80dp。桌面
@@ -74,6 +75,10 @@ class _CategoryPageState extends State<CategoryPage> {
   int _tabValue = 1;
   int _selected = 0;
   bool _loading = false;
+
+  /// 每次 [_load] 自增。请求回来时只有最新一代能落地：加载期间再切频道
+  /// 不会被丢掉，先发后到的旧频道响应也不会覆盖新频道的内容。
+  int _loadGeneration = 0;
 
   List<_Section> _sections = const [];
   final Set<int> _expanded = <int>{};
@@ -106,36 +111,35 @@ class _CategoryPageState extends State<CategoryPage> {
 
   Future<void> _load({int? tab}) async {
     final target = tab ?? _tabValue;
-    if (_loading) return;
+    final generation = ++_loadGeneration;
     setState(() {
       _loading = true;
       _error = null;
     });
-    late final CategoryFront front;
     try {
-      front = await _fetch(tab: target);
-    } catch (_) {
-      if (!mounted) return;
+      final front = await _fetch(tab: target);
+      if (!mounted || generation != _loadGeneration) return;
       setState(() {
-        _loading = false;
-        _error = '分类加载失败，请稍后重试';
+        _tabValue = target;
+        _front = front;
+        _error = front.isEmpty ? '分类暂时没有内容，稍后再试' : null;
+        _sections = front.isEmpty ? const <_Section>[] : _sectionsFor(front);
+        _selected = 0;
+        _expanded.clear();
       });
-      return;
+      // 频道重取后回到顶部（控制器复用，extent 已变，须等布局落地）。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scroll.hasClients) _scroll.jumpTo(0);
+      });
+    } catch (error) {
+      if (!mounted || generation != _loadGeneration) return;
+      setState(() => _error = userFacingError(error));
+    } finally {
+      // 失败也要复位：否则转圈永远挡在重试前面，重试会被 `_loading` 吞掉。
+      if (mounted && generation == _loadGeneration) {
+        setState(() => _loading = false);
+      }
     }
-    if (!mounted) return;
-    setState(() {
-      _loading = false;
-      _tabValue = target;
-      _front = front;
-      _error = front.isEmpty ? '分类暂时没有内容，稍后再试' : null;
-      _sections = front.isEmpty ? const <_Section>[] : _sectionsFor(front);
-      _selected = 0;
-      _expanded.clear();
-    });
-    // 频道重取后回到顶部（控制器复用，extent 已变，须等布局落地）。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scroll.hasClients) _scroll.jumpTo(0);
-    });
   }
 
   /// 分组重建：首组「热门标签」= 全量瓦片（老 schema 的 dim=0 不下瓦片，
@@ -209,14 +213,29 @@ class _CategoryPageState extends State<CategoryPage> {
     });
   }
 
-  /// Tapping a tag opens its book list through the Rust backend's
-  /// /api/v1/category/books route.
-  void _openTile(CategoryTile tile) {
-    if (tile.name.isEmpty) return;
-    Navigator.push(
-      context,
+  /// Tag taps open the Rust-backed category book list
+  /// (/api/v1/category/books); the toolbar/search buttons still use the generic
+  /// search page.
+  void _openTile(String name) {
+    if (name.isEmpty) return;
+    Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => CategoryBooksPage(name: tile.name, tab: _tabValue),
+        builder: (_) => CategoryBooksPage(name: name, tab: _tabValue),
+      ),
+    );
+  }
+
+  void _openSearch({String? query}) {
+    final category = switch (_tabValue) {
+      3 => SearchCategory.audio,
+      5 => SearchCategory.manga,
+      6 => SearchCategory.video,
+      _ => SearchCategory.book,
+    };
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            SearchPage(initialQuery: query, initialCategory: category),
       ),
     );
   }
@@ -235,6 +254,7 @@ class _CategoryPageState extends State<CategoryPage> {
               tabs: front?.tabs ?? const [],
               selected: _tabValue,
               onSelect: (v) => _load(tab: int.tryParse(v) ?? 1),
+              onSearch: _openSearch,
             ),
             if (_loading)
               Padding(
@@ -243,7 +263,16 @@ class _CategoryPageState extends State<CategoryPage> {
               )
             else if (_error != null)
               Expanded(
-                child: _ErrorView(message: _error!, onRetry: _load),
+                child: Center(
+                  child: HomeStateView(
+                    key: const Key('category_retry'),
+                    icon: LucideIcons.cloud_off,
+                    title: _error!,
+                    actionLabel: '重试',
+                    actionIcon: LucideIcons.refresh_cw,
+                    onAction: () => _load(),
+                  ),
+                ),
               )
             else if (front != null)
               Expanded(
@@ -252,18 +281,24 @@ class _CategoryPageState extends State<CategoryPage> {
                 child: LayoutBuilder(
                   builder: (context, constraints) {
                     final columns = _chipColumnsFor(
-                      constraints.maxWidth - _dimRailWidth - 32,
+                      constraints.maxWidth - categoryDimRailWidth - 32,
                     );
                     _columns = columns;
                     return Row(
                       children: [
-                        _DimRail(
-                          sections: _sections,
+                        CategoryDimRail(
+                          titles: [
+                            for (final section in _sections) section.title,
+                          ],
                           selectedIndex: _selected,
                           onSelect: _scrollToSection,
                         ),
                         Expanded(
-                          child: _SectionList(state: this, columns: columns),
+                          child: _SectionList(
+                            state: this,
+                            columns: columns,
+                            onSearch: _openTile,
+                          ),
                         ),
                       ],
                     );
@@ -283,11 +318,13 @@ class _TopBar extends StatelessWidget {
     required this.tabs,
     required this.selected,
     required this.onSelect,
+    required this.onSearch,
   });
 
   final List<CategoryTab> tabs;
   final int selected;
   final ValueChanged<String> onSelect;
+  final VoidCallback onSearch;
 
   @override
   Widget build(BuildContext context) {
@@ -333,10 +370,11 @@ class _TopBar extends StatelessWidget {
                               fontWeight: isSelected
                                   ? FontWeight.w700
                                   : FontWeight.w400,
-                              // 官方：选中纯黑，未选 #8C8C8C。
                               color: isSelected
                                   ? palette.ink
-                                  : const Color(0xFF8C8C8C),
+                                  : (palette.eink
+                                        ? palette.ink
+                                        : const Color(0xFF8C8C8C)),
                             ),
                           ),
                         ),
@@ -347,58 +385,10 @@ class _TopBar extends StatelessWidget {
           IconButton(
             key: const Key('category_search'),
             icon: Icon(LucideIcons.search, size: 20, color: palette.ink),
-            onPressed: () {},
+            tooltip: '搜索',
+            onPressed: onSearch,
           ),
         ],
-      ),
-    );
-  }
-}
-
-/// 左侧 88dp 维度栏：项高 50dp、14sp 居中；选中橙、未选黑（真机取证，
-/// 官方无指示条、无选中底色——`TabPageLeftCell` 只有颜色分支）。
-class _DimRail extends StatelessWidget {
-  const _DimRail({
-    required this.sections,
-    required this.selectedIndex,
-    required this.onSelect,
-  });
-
-  final List<_Section> sections;
-  final int selectedIndex;
-  final ValueChanged<int> onSelect;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = HomePalette.of(context);
-    return SizedBox(
-      width: _dimRailWidth,
-      child: ColoredBox(
-        color: palette.soft,
-        child: ListView.builder(
-          itemCount: sections.length,
-          itemBuilder: (context, index) {
-            final selected = index == selectedIndex;
-            return GestureDetector(
-              key: ValueKey('category_dim_$index'),
-              behavior: HitTestBehavior.opaque,
-              onTap: () => onSelect(index),
-              child: Container(
-                height: 50,
-                alignment: Alignment.center,
-                child: Text(
-                  sections[index].title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: selected ? HomePalette.accent : palette.ink,
-                  ),
-                ),
-              ),
-            );
-          },
-        ),
       ),
     );
   }
@@ -408,10 +398,15 @@ class _DimRail extends StatelessWidget {
 /// LazyColumn，每组「组头 + chunked(3) 网格行」两个 item；此处一组一个
 /// item（组头 + Column(网格行)），行高全是定值，滚动定位用前缀和。
 class _SectionList extends StatelessWidget {
-  const _SectionList({required this.state, required this.columns});
+  const _SectionList({
+    required this.state,
+    required this.columns,
+    required this.onSearch,
+  });
 
   final _CategoryPageState state;
   final int columns;
+  final ValueChanged<String> onSearch;
 
   @override
   Widget build(BuildContext context) {
@@ -425,13 +420,19 @@ class _SectionList extends StatelessWidget {
       child: ListView.builder(
         key: const ValueKey('category_tile_list'),
         controller: state._scroll,
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        padding: EdgeInsets.fromLTRB(
+          16,
+          0,
+          16,
+          16 + MediaQuery.paddingOf(context).bottom,
+        ),
         itemCount: state._sections.length,
         itemBuilder: (context, index) => _SectionView(
           state: state,
           index: index,
           section: state._sections[index],
           columns: columns,
+          onSearch: onSearch,
         ),
       ),
     );
@@ -444,12 +445,14 @@ class _SectionView extends StatelessWidget {
     required this.index,
     required this.section,
     required this.columns,
+    required this.onSearch,
   });
 
   final _CategoryPageState state;
   final int index;
   final _Section section;
   final int columns;
+  final ValueChanged<String> onSearch;
 
   @override
   Widget build(BuildContext context) {
@@ -471,7 +474,7 @@ class _SectionView extends StatelessWidget {
           _ChipRow(
             tiles: visible.sublist(i, (i + columns).clamp(0, visible.length)),
             columns: columns,
-            onTap: state._openTile,
+            onSearch: onSearch,
           ),
       ],
     );
@@ -498,7 +501,9 @@ class _SectionHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = HomePalette.of(context);
-    final gray = palette.dark ? palette.muted : const Color(0xFF969696);
+    final gray = palette.dark || palette.eink
+        ? palette.muted
+        : const Color(0xFF969696);
     return Padding(
       padding: const EdgeInsets.only(top: 16),
       child: SizedBox(
@@ -543,12 +548,12 @@ class _ChipRow extends StatelessWidget {
   const _ChipRow({
     required this.tiles,
     required this.columns,
-    required this.onTap,
+    required this.onSearch,
   });
 
   final List<CategoryTile> tiles;
   final int columns;
-  final ValueChanged<CategoryTile> onTap;
+  final ValueChanged<String> onSearch;
 
   @override
   Widget build(BuildContext context) {
@@ -558,7 +563,10 @@ class _ChipRow extends StatelessWidget {
       cells.add(
         Expanded(
           child: i < tiles.length
-              ? _CategoryChip(tile: tiles[i], onTap: () => onTap(tiles[i]))
+              ? _CategoryChip(
+                  tile: tiles[i],
+                  onTap: () => onSearch(tiles[i].name),
+                )
               : const SizedBox(),
         ),
       );
@@ -579,17 +587,21 @@ class _CategoryChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = HomePalette.of(context);
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Padding(
-        padding: const EdgeInsets.only(top: 6, bottom: 4),
+    return Padding(
+      padding: const EdgeInsets.only(top: 6, bottom: 4),
+      child: HomePressable(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
+        semanticLabel: '搜索${tile.name}分类',
         child: Container(
           key: ValueKey('category_tile_${tile.id}_${tile.name}'),
           height: 30,
           decoration: BoxDecoration(
-            color: palette.dark ? palette.soft : const Color(0xFFECECEC),
+            color: palette.eink
+                ? Colors.white
+                : (palette.dark ? palette.soft : const Color(0xFFECECEC)),
             borderRadius: BorderRadius.circular(6),
+            border: palette.eink ? Border.all(color: palette.line) : null,
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -605,36 +617,6 @@ class _CategoryChip extends StatelessWidget {
             ],
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _ErrorView extends StatelessWidget {
-  const _ErrorView({required this.message, required this.onRetry});
-
-  final String message;
-  final Future<void> Function() onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = HomePalette.of(context);
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(LucideIcons.cloud_off, size: 40, color: palette.muted),
-          const SizedBox(height: 12),
-          Text(message, style: TextStyle(fontSize: 14, color: palette.muted)),
-          const SizedBox(height: 12),
-          TextButton(
-            onPressed: () => onRetry(),
-            child: const Text(
-              '重试',
-              style: TextStyle(color: HomePalette.accent),
-            ),
-          ),
-        ],
       ),
     );
   }
