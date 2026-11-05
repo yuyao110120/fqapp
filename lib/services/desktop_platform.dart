@@ -111,6 +111,11 @@ class DesktopPlatform with WindowListener {
     final minimumSize = isMacOSPlatform
         ? Size(min(400, available.width), min(560, available.height))
         : Size(min(800, available.width), min(440, available.height));
+    AppLog.d(
+      'desktop-window',
+      'display=${display.size} visible=${display.visibleSize} '
+          'preferred=$preferredSize',
+    );
     await windowManager.waitUntilReadyToShow(
       WindowOptions(
         size: preferredSize,
@@ -121,6 +126,16 @@ class DesktopPlatform with WindowListener {
       () async {
         await windowManager.show();
         await windowManager.focus();
+        if (isMacOSPlatform) {
+          // macOS may restore the previous frame (or shrink a tall window to
+          // the active screen) after show; re-assert the phone-shaped frame.
+          await windowManager.setSize(preferredSize);
+          await windowManager.center();
+          AppLog.d(
+            'desktop-window',
+            'actual=${await windowManager.getSize()}',
+          );
+        }
       },
     );
     _tts.setCompletionHandler(() {
