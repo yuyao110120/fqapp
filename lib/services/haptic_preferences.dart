@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -29,9 +31,11 @@ class HapticPreferences extends ValueNotifier<bool> {
       final prefs = await SharedPreferences.getInstance();
       if (revision == _revision && revision == 0) {
         value = prefs.get(storageKey) != false;
-        if (!await _applyPlatform(value)) {
-          throw StateError('Could not apply the Android haptic preference');
-        }
+        // Fire-and-forget: the haptic gate is a non-critical platform side
+        // effect, and awaiting its MethodChannel response blocks cold start
+        // (and never settles under the widget-test fake-async clock when the
+        // channel has no native handler).
+        unawaited(_applyPlatform(value));
       }
       _loaded = true;
     } finally {
