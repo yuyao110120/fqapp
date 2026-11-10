@@ -4,21 +4,28 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/home_cell.dart';
-import '../models/media_item.dart';
 import '../models/search_discovery.dart';
+import '../models/media_item.dart';
 import '../services/api_client.dart';
 import '../services/app_log.dart';
+import '../services/app_style_tokens.dart';
+import '../services/app_theme_style.dart';
 import '../services/book_open_preferences.dart';
 import '../services/chapter_cache_store.dart';
 import '../services/desktop_platform.dart';
 import '../services/home_continue_preferences.dart';
 import '../services/home_page_affinity.dart';
 import '../services/library_store.dart';
+import '../widgets/home/classic_home_feed_states.dart';
+import '../widgets/home/classic_home_skeleton.dart';
+import '../widgets/home/classic_home_stream_footer.dart';
+import '../widgets/home/home_hero.dart';
+import '../widgets/home/home_archive.dart';
 import '../widgets/home/home_cell_blocks.dart';
 import '../widgets/home/home_cell_renderers.dart';
 import '../widgets/home/home_design.dart';
 import '../widgets/home/home_feed_states.dart';
-import '../widgets/home/home_hero.dart';
+import '../widgets/home/home_masthead.dart';
 import '../widgets/home/home_media_card.dart';
 import '../widgets/home/home_reading_row.dart';
 import '../widgets/home/home_shelf.dart';
@@ -57,6 +64,10 @@ class HomePage extends ConsumerStatefulWidget {
     this.cueLoader,
   });
 
+  /// Classic search suggestions. Null keeps tests and standalone pages offline.
+  /// The application shell supplies ApiClient.searchCue.
+  final Future<SearchCue> Function()? cueLoader;
+
   final ChapterCache? cacheStore;
   final ReaderStore? readerStore;
 
@@ -67,12 +78,6 @@ class HomePage extends ConsumerStatefulWidget {
   /// 所以控制器要能被外面拿到。为 null 时首页自建并自行释放，测试与独立
   /// 使用不受影响。
   final ScrollController? scrollController;
-
-  /// 搜索框热搜词来源，由壳层注入（生产接 `ApiClient.searchCue`）。
-  ///
-  /// 注入而不是页内直连，与 [SearchPage] 的 `hotSearchLoader` 同一规矩：
-  /// 页面测试不落网络（ApiClient 的超时是 20s Timer，挂进测试必炸）。
-  final Future<SearchCue> Function()? cueLoader;
 
   @override
   ConsumerState<HomePage> createState() => _HomePageState();
@@ -88,6 +93,10 @@ class _HomePageState extends ConsumerState<HomePage> {
   double? _previewTextScale;
   Timer? _loadMoreTimer;
   bool _visible = false;
+
+  /// Cached slivers capture geometry/props as well as data. Include the
+  /// interpolated radius so AnimatedTheme cannot leave a halfway value cached.
+  (AppThemeStyle, bool, double)? _presentationKey;
 
   /// Item keys whose entrance animation already played. A sliver disposes the
   /// children that leave its cache extent, so without this each scroll back up
@@ -151,6 +160,18 @@ class _HomePageState extends ConsumerState<HomePage> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final tokens = AppStyleTokens.of(context);
+    final presentationKey = (
+      tokens.style,
+      tokens.showDecorativeCodes,
+      tokens.coverRadius,
+    );
+    if (_presentationKey != presentationKey) {
+      _presentationKey = presentationKey;
+      _gridSliver = null;
+      _blocksBody = null;
+      _previewBodies.clear();
+    }
     final visible = TickerMode.valuesOf(context).enabled;
     if (_visible == visible) return;
     _visible = visible;
@@ -276,11 +297,17 @@ class _HomePageState extends ConsumerState<HomePage> {
             bottom: false,
             child: Column(
               children: [
-                HomeHero(
-                  onSearch: _openSearch,
-                  onCategory: _openCategory,
-                  cueLoader: widget.cueLoader,
-                ),
+                if (AppStyleTokens.of(context).isClassic)
+                  HomeHero(
+                    onSearch: _openSearch,
+                    onCategory: _openCategory,
+                    cueLoader: widget.cueLoader,
+                  )
+                else
+                  HomeMasthead(
+                    onSearch: _openSearch,
+                    onCategory: _openCategory,
+                  ),
                 HomeTabBar(
                   selectedIndex: state.tabIndex,
                   onSelect: _selectTab,
@@ -356,23 +383,35 @@ class _HomePageState extends ConsumerState<HomePage> {
       child: CustomScrollView(
         primary: false,
         physics: const NeverScrollableScrollPhysics(),
-        slivers: body ?? const [SliverToBoxAdapter(child: HomeSkeleton())],
+        slivers: body ?? [SliverToBoxAdapter(child: _skeleton())],
       ),
     );
   }
 
+  Widget _skeleton() => AppStyleTokens.of(context).isClassic
+      ? const ClassicHomeSkeleton()
+      : const HomeSkeleton();
+
   List<Widget> _contentSlivers(HomeState state, double gridWidth) {
+    final classic = AppStyleTokens.of(context).isClassic;
     if (state.error != null &&
         state.items.isEmpty &&
         _cellsOfCurrentTab(state).isEmpty) {
       return [
         SliverToBoxAdapter(
-          child: HomeFeedError(
-            headline: '故事还在路上',
-            message: '暂时无法加载推荐，稍后再试一次。',
-            detail: state.error!,
-            onRetry: _refresh,
-          ),
+          child: classic
+              ? ClassicHomeFeedError(
+                  headline: '故事还在路上',
+                  message: '暂时无法加载推荐，稍后再试一次。',
+                  detail: state.error!,
+                  onRetry: _refresh,
+                )
+              : HomeFeedError(
+                  headline: '故事还在路上',
+                  message: '暂时无法加载推荐，稍后再试一次。',
+                  detail: state.error!,
+                  onRetry: _refresh,
+                ),
         ),
       ];
     }
@@ -417,19 +456,32 @@ class _HomePageState extends ConsumerState<HomePage> {
       // `alx.xml` points its `SkeletonLayout` at `cmc`, so a cold first load
       // paints the skeleton rather than a spinner.
       if (_hadContent) {
-        return const [SliverToBoxAdapter(child: HomeFeedLoading())];
+        return [
+          SliverToBoxAdapter(
+            child: classic
+                ? const ClassicHomeFeedLoading()
+                : const HomeFeedLoading(),
+          ),
+        ];
       }
-      return const [SliverToBoxAdapter(child: HomeSkeleton())];
+      return [SliverToBoxAdapter(child: _skeleton())];
     }
     return [
       SliverFillRemaining(
         hasScrollBody: false,
-        child: HomeFeedEmpty(
-          title: '暂无内容',
-          message: '换个分类，或刷新发现新故事',
-          actionLabel: '刷新推荐',
-          onRefresh: _refresh,
-        ),
+        child: classic
+            ? ClassicHomeFeedEmpty(
+                title: '暂无内容',
+                message: '换个分类，或刷新发现新故事',
+                actionLabel: '刷新推荐',
+                onRefresh: _refresh,
+              )
+            : HomeFeedEmpty(
+                title: '暂无内容',
+                message: '换个分类，或刷新发现新故事',
+                actionLabel: '刷新推荐',
+                onRefresh: _refresh,
+              ),
       ),
     ];
   }
@@ -530,9 +582,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     if (entries.isNotEmpty) {
       // 多个卡片流合并成一个网格：首页只保留一个「为你推荐」段落，块与块
       // 之间的边界对读书的人没有意义。
-      slivers.add(
-        SliverToBoxAdapter(child: HomeSectionHeader(title: _gridTitle(state))),
-      );
+      slivers.add(SliverToBoxAdapter(child: _gridHeader(state)));
       slivers.add(_gridBody(entries, gridWidth));
       rendered = true;
     }
@@ -570,33 +620,41 @@ class _HomePageState extends ConsumerState<HomePage> {
     final scaler = MediaQuery.textScalerOf(context);
     final titleScale = scaler.scale(15);
     final metaScale = scaler.scale(11);
-    final cached = _gridSliver;
-    if (cached != null &&
-        identical(_gridItems, state.items) &&
-        _gridTabIndex == state.tabIndex &&
-        _gridWidth == gridWidth &&
-        _gridTitleScale == titleScale &&
-        _gridMetaScale == metaScale) {
-      return [
-        SliverToBoxAdapter(child: HomeSectionHeader(title: _gridTitle(state))),
-        cached,
-      ];
+    var sliver = _gridSliver;
+    if (sliver == null ||
+        !identical(_gridItems, state.items) ||
+        _gridTabIndex != state.tabIndex ||
+        _gridWidth != gridWidth ||
+        _gridTitleScale != titleScale ||
+        _gridMetaScale != metaScale) {
+      _gridItems = state.items;
+      _gridTabIndex = state.tabIndex;
+      _gridWidth = gridWidth;
+      _gridTitleScale = titleScale;
+      _gridMetaScale = metaScale;
+      sliver = _gridSliver = _gridBody(entries, gridWidth);
     }
-    _gridItems = state.items;
-    _gridTabIndex = state.tabIndex;
-    _gridWidth = gridWidth;
-    _gridTitleScale = titleScale;
-    _gridMetaScale = metaScale;
-    final sliver = _gridBody(entries, gridWidth);
-    return [
-      SliverToBoxAdapter(child: HomeSectionHeader(title: _gridTitle(state))),
-      _gridSliver = sliver,
-    ];
+    return [SliverToBoxAdapter(child: _gridHeader(state)), sliver];
+  }
+
+  Widget _gridHeader(HomeState state) => AppStyleTokens.of(context).isClassic
+      ? HomeSectionHeader(title: _gridTitle(state))
+      : HomeSectionLabel(code: _gridCode(state), title: _gridTitle(state));
+
+  /// 分区编号：排行榜占了 01，网格就是 02；没有排行榜时网格自己从 01 起。
+  String _gridCode(HomeState state) {
+    final hasRank = _cellsOfCurrentTab(
+      state,
+    ).any((cell) => cell.showType == kHomeCellRank);
+    return hasRank ? '02 / FOR YOU' : '01 / FOR YOU';
   }
 
   /// One book grid: cover, title, one meta line, nothing else.
   Widget _gridBody(List<MediaItem> entries, double gridWidth) {
     final cardWidth = homeShelfCardWidth(context, gridWidth);
+    final tokens = AppStyleTokens.of(context);
+    final classic = tokens.isClassic;
+    final radius = classic ? 12.0 : tokens.coverRadius;
     return SliverPadding(
       padding: const EdgeInsets.symmetric(horizontal: homeGutter),
       sliver: SliverGrid(
@@ -612,6 +670,9 @@ class _HomePageState extends ConsumerState<HomePage> {
             child: HomeMediaCard(
               item: item,
               coverWidth: cardWidth,
+              radius: radius,
+              titleSize: classic ? 15 : homeCardTitleSize,
+              archiveCode: classic ? null : homeFileCode(item),
               onTap: () => _openItem(item),
             ),
           );
@@ -627,6 +688,22 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   /// 流尾三态：加载中 / 追加失败可重试 / 已到底。
   Widget _footer(HomeState state) {
+    if (AppStyleTokens.of(context).isClassic) {
+      if (state.isLoadMore) {
+        return const SliverToBoxAdapter(
+          child: ClassicHomeStreamFooter.loading(),
+        );
+      }
+      if (state.error != null) {
+        return SliverToBoxAdapter(
+          child: ClassicHomeStreamFooter.retry(onRetry: _retryLoadMore),
+        );
+      }
+      if (!state.hasMore) {
+        return const SliverToBoxAdapter(child: ClassicHomeStreamFooter.done());
+      }
+      return const SliverToBoxAdapter(child: SizedBox.shrink());
+    }
     if (state.isLoadMore) {
       return SliverToBoxAdapter(
         child: HomeStreamFooter.loading(onRetry: _retryLoadMore),
@@ -647,10 +724,7 @@ class _HomePageState extends ConsumerState<HomePage> {
       SliverToBoxAdapter(child: SizedBox(height: homeBottomClearance(context)));
 
   void _openSearch() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const SearchPage()),
-    );
+    Navigator.push(context, SearchRoute(builder: (_) => const SearchPage()));
   }
 
   /// 官方搜索行右上角的「分类」入口（`alx.xml` `i_y`）。官方点它走

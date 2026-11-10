@@ -117,6 +117,33 @@ fqapp/
 - 新增或修改注释时，关键业务理由、边界条件和结论应在注释正文中用一两句话说明，不再新增只指向本地笔记的依据。需要展开时，链接仓库内已跟踪的文档、公开 issue/PR 或提交；私人日志、设备信息和取证材料不直接入库。
 - 现有引用暂不批量改写；维护相关代码时补齐自足说明，不把无关的注释清理混入功能改动。历史“为守住行数预算而拆分”等说明不代表当前规则：`scripts/check_line_budget.sh` 只报告体量，拆分应基于职责和可读性，不设固定行数门禁（#253）。
 
+### Wenku8 界面移植边界
+
+移植源固定为 `mikufoxxx/Wenku8_Flutter` 的
+`ebcd7f1891b54a92fc045c372974d70ec829f10a`（2026-11-03）公开源码。
+不是依据截图另做一套相似风格，也不导入它的账号、网络、云同步或阅读引擎。
+原始声明与两份 GPL 文本保留在 `assets/licenses/wenku8/`，应用“关于 →
+开源许可”可查看；具体适配边界见同目录 `PORTING.md`。
+
+第一批范围：
+
+- `lib/widgets/wenku/`：提取上游档案图标、有限入场动画、玻璃搜索框、固定页头和入口卡片；只在已移植页面启用上游主题，不改全局首页配色。
+- `third_party/liquid_glass_easy/`：保留上游使用的 5.0.0 本地补丁版本、shader、MIT LICENSE 与 PATCHES.md，不用普通模糊底板冒充折射。
+- 底部导航：主壳层使用上游 `GlassDock`（`lib/widgets/shell_dock.dart`），保留首页／短剧／书架／我的四个入口；短剧视频流与 OLED 纯黑下用上游轻量模式的静态底板，不对逐帧变化的画面做实时折射。
+- 搜索：把上游主壳层内的搜索视图适配为 fqapp 独立路由（`SearchRoute` 沿用上游 420ms 斜切平面入场），保留来源、内容分类、ID 查询、评分筛选、历史和分页。页头、分段页签、列表／网格、骨架、空态与流尾使用上游组件；书旗作为分段控件的最后一段。
+- 我的：使用上游 `MyPage` 的身份卡与功能入口结构。身份卡只描述本地应用，不提供文库登录／同步。现有统计另开路由，统计内容本身尚未移植。
+
+后续独立批次仍包括完整发现页、详情、书架、本地缓存对应页、设置、
+统计及阅读器菜单。当前首页保留原分支基线，不计作已核对完成的 Wenku8 移植。
+短剧、漫画等 fqapp 专有功能没有上游一一对应页面，需单独适配，不能计入原版页面完成率。
+上游公开快照缺少部分被引用模块（例如本地批量导入、自定义 TTS、报告页），
+不能独立构建；没有公开实现的部分不虚构为“已移植”。
+
+构建前执行 `flutter pub get` 同步本地 path 包与锁文件；shader 由该包自己的
+`pubspec.yaml` 声明，不需要另行下载。界面验证使用重新构建的 release APK，
+不能拿上一批设备上的安装包验证当前源码。既有测试保持冻结；不把静态检查
+或历史测试结果当成界面一致性的证据。
+
 ---
 
 ## 构建环境
@@ -323,6 +350,19 @@ $serial = '127.0.0.1:16384' # 仅为已验证示例，必须按本次 info 输�
 
 官方参考：[ADB 连接说明](https://mumu.163.com/help/20240807/40912_1073151.html)、[MuMuManager 命令行说明](https://mumu.163.com/help/20240726/35047_1170006.html)。
 
+**本地 Flutter 工具链一致性**：`pubspec.lock` 与 CI（`FLUTTER_VERSION: '3.47.9'`）已升到 3.47.9，`.dart_tool/package_config.json` 也指向 `E:\ctf-aaa\.toolchains\flutter-3.47.9`；PATH 上的 `C:\Users\ch6vip\flutter\bin` 仍是 3.44.6 / Dart 3.12.2。混用会让 `flutter test` 报 `petitparser` 语言版本 3.13 过高及 `ui.HitTest*` 类型缺失；切到 3.47.9 后若出现 `Invalid kernel binary format version (expected 138, found 130)`，是 `.dart_tool/hooks_runner` 里旧 SDK 编译的 `hook.dill`，删除该生成目录即可，不必改动源码。
+
+会话级临时指定（不修改全局 PATH）：
+
+```powershell
+$env:PATH = 'E:\ctf-aaa\.toolchains\flutter-3.47.9\flutter\bin;' + $env:PATH
+Remove-Item -Recurse -Force .dart_tool\hooks_runner  # 仅在出现 kernel 版本冲突时
+flutter analyze --no-pub
+bash scripts/test_quick.sh home
+```
+
+构建 MuMu 验证包用 `flutter build apk --release --target-platform android-arm64 --split-per-abi --no-pub`；不带 `--split-per-abi` 的 fat APK 的 versionCode 低于已装包，安装会报 `INSTALL_FAILED_VERSION_DOWNGRADE`。
+
 #### 2026-11-04 听书复核
 
 在上述实例安装 `1.0.200` arm64 release 包，安装后核对 APK SHA-256 为 `ab40ff2a2bfac46e1863ae78311f003f140fd0442915a720ae20e6f765f89bd7`。以下是该包的实际界面操作和 Android 媒体会话观察，不是自动化测试结论：
@@ -346,6 +386,46 @@ $serial = '127.0.0.1:16384' # 仅为已验证示例，必须按本次 info 输�
 本机 `qemu.hw.mainkeys=1`，窗口没有系统导航栏的 InsetsSource，因此上述记录只证明设置保存及原生窗口显隐请求，不证明小白条已实际显示、内容避让或一次上滑即可回桌面。这些交互在本实例仍未验证；未改模拟器系统属性、导航模式或系统镜像来制造通过结果。截图、窗口状态与报告位于仓库外 `%TEMP%\fqapp-mumu-nav-jb1dhjos`。
 
 验证结束恢复“系统状态栏”开启、“底部导航栏”关闭和第 1 章首页，返回应用首页，保留安装的新包与原应用数据；本次未继续听书验证。
+
+#### 2026-11-05 首页档案化改版复核
+
+同一 MuMu 实例（本次 `MuMuManager info -v all` 查得实例 `0` / Android 12 / `127.0.0.1:16384`）安装当前分支重建的 arm64 release 包：Flutter 3.47.9 / Dart 3.13.7、`--split-per-abi`、versionName `1.0.200` / versionCode `2205`，APK SHA-256 为 `e719dad17865afe76a8f46ab9208308d08af0938a24fb15d446f46f52e60da5a`，安装后设备侧 hash 一致。旧包 `ee9409e3…`（11-04 18:21 构建，对应 `e615e2b`）留作界面对照基线。以下是实际界面操作、语义树与 logcat 观察，不是自动化测试结论：
+
+| 路径 | 实际结果 | 限制 |
+|---|---|---|
+| 冷启动 | `am start -W` TotalTime 约 9.0s，`fqapi_core: core init: port=18921`；启动后约 20s 内显示「正在启动本地服务…」，随后进入完整首页 | 后端服务就绪前的加载态属正常初始化 |
+| 首页档案化 | 什锦铺 / SHIJINPU STORY ARCHIVE、01 / RANKING、排行榜、榜单胶囊、书脊阵列、信息行、翻页器、悬浮 dock 全部呈现，与旧包基线一致 | 仅在本实例分辨率与字体下观察 |
+| 翻页器 | NO.001 → NO.002，第 2 本 / 共 16 本，书名、作者、在读人数与书脊焦点同步 | 未验证点击书脊画布的命中换算 |
+| 切换榜单 | 「完本榜」选中并刷新为 30 本 / NO.001 / 19.2 万人在读 | 上游数据，不作内容正确性断言 |
+| 切换顶部 tab | 「小说」下划线正确移动，内容区仍显示同一排行榜区块；切回「推荐」正常 | 各 tab 内容差异未验证 |
+| 短屏 + 大字号 | 720x900 + `font_scale 1.3`：首屏信息行被压到 `[32,896][688,900]`，翻页器在首屏外；4 段小滚动后翻页器到 `y=552..624`（dock 上沿 754），点击成功翻到第 2 本 | 滚动中间态 `y=824..896` 时点击会命中 dock 的「我的」并跳转；功能可用，属首屏密度与中间态误触的体验取舍 |
+
+短屏组合的「滚动后可命中」已固化为 `test/home_rank_shelf_geometry_test.dart` 的回归用例（`bfd63a2`）；未因此改动 `Scaffold(extendBody: true)`、悬浮 dock 或 `HomeRankShelf._geometryFor`。logcat 无 FATAL EXCEPTION、ANR 或应用崩溃。
+
+本机 `x86_64` 主 ABI 经 ARM 转译运行 arm64 包；媒体流静音且无 TTS 服务，本轮未验证听书发声、物理设备性能、硬件解码、16 KiB 页设备，以及自动降级 flat 态。截图、UI dump 与 logcat 位于仓库外 `%TEMP%\fqapp-mumu-home-20261105`。
+
+验证结束恢复 `wm size` 为 720x1280、`font_scale` 为未设置、首页「推荐榜」NO.001 / 共 16 本，保留安装的新包与原应用数据；未卸载、清空数据或改装调试包。
+
+#### 2026-11-10 Android 振动反馈开关（#303）
+
+基于 `c29b279`，在“设置 → 外观”增加默认开启的“振动反馈”；经典与档案主题共用 `haptics_enabled`，冷启动在交互页面挂载前读取。统一触感组件和书架/播放手势的直接调用都读取该偏好，Android 的 activity decor view 同时拦住 Flutter 控件自带的长按振动；不改系统振动或键盘设置。iOS 暂不显示此开关。
+
+本次由 MuMuManager 查询得到实例 `0` / Android 12 / `127.0.0.1:16385`，720x1280、字体比例 1.0、x86_64 经 ARM 转译运行 arm64 release。Flutter 3.47.9 / Dart 3.13.7，应用版本保持 `1.0.201+206`（arm64 split versionCode `2206`）；安装后设备侧 APK SHA-256 与本地产物一致：`c7778e081a31757ba4909475450e0009db3b0bee30c114b47e3546958bdc1132`。
+
+| 真实路径 | 观察结果 |
+|---|---|
+| 升级后进入档案主题的外观设置 | 开关默认开启，语义树 `checked=true`；按钮操作在 `dumpsys vibrator_manager` 中产生本应用的 `TEXTURE_TICK` 记录 |
+| 关闭后返回、重新进入外观、打开/关闭主题模式菜单 | 开关显示关闭，操作前后本应用的振动记录完全一致，没有新增 |
+| 关闭后强制停止进程并冷启动，再进入外观 | 语义树仍为 `checked=false`；启动及后续导航没有新增本应用振动记录 |
+| 从档案切换为经典主题，再长按书架中的浏览历史条目 | 两主题共用关闭状态；长按正常进入“已选择 1 本”，没有新增振动记录，随后退出编辑未删除数据 |
+| 经典主题重新开启后重复同一长按 | 正常进入编辑，系统服务新增本应用 `CLICK` 记录（15:12:23.158）；切回档案后按钮恢复 `TEXTURE_TICK` |
+| 点击设置行关闭再开启，随后冷启动 | 整行点击也生效；重启后的开关为 `checked=true` |
+
+补充检查：受影响的 10 个 Dart 文件定向分析无诊断；使用 `build_rust_backend.ps1 -SkipCodegen` 构建 ARM64/ARMv7 核心，随后 `flutter build apk --release --target-platform android-arm,android-arm64 --split-per-abi` 成功；arm64 APK 的正式签名校验成功且与原安装包一致。未新增、修改或运行测试。
+
+结束时恢复档案主题、跟随系统、沉浸式播放布局和振动开启，返回首页并保留新包；系统 `haptic_feedback_enabled` / `sound_effects_enabled` 均保持 1，分辨率和字体比例不变。未卸载、清空数据或改装调试包。截图、语义树、振动记录、日志与原包备份位于仓库外 `%TEMP%\fqapp-haptics-20261110`。
+
+这些记录证明界面、持久化与 Android 振动请求开关，不证明实体振动马达的触感或噪声；ARMv7 仅构建，未在设备上运行；视频倍速与听书定位的具体播放路径未实操。最终进程的 logcat 未见匹配的崩溃或振动通道初始化错误。iOS 构建与物理设备性能未验证。
 
 ### 分层跑测试
 

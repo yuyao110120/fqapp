@@ -12,15 +12,14 @@ import 'package:hive_ce/hive.dart';
 abstract interface class SecureKeyStorage {
   Future<String?> read(String key);
   Future<void> write(String key, String value);
+  Future<void> delete(String key);
 }
 
 /// Production backend: `flutter_secure_storage` (Android Keystore /
 /// EncryptedSharedPreferences, iOS Keychain). The raw key bytes never touch
 /// SharedPreferences or any other plaintext store.
 class FlutterSecureKeyStorage implements SecureKeyStorage {
-  const FlutterSecureKeyStorage([
-    this._storage = const FlutterSecureStorage(),
-  ]);
+  const FlutterSecureKeyStorage([this._storage = const FlutterSecureStorage()]);
 
   final FlutterSecureStorage _storage;
 
@@ -30,6 +29,9 @@ class FlutterSecureKeyStorage implements SecureKeyStorage {
   @override
   Future<void> write(String key, String value) =>
       _storage.write(key: key, value: value);
+
+  @override
+  Future<void> delete(String key) => _storage.delete(key: key);
 }
 
 /// In-memory fake for tests and for environments without a platform channel.
@@ -42,6 +44,11 @@ class InMemorySecureKeyStorage implements SecureKeyStorage {
   @override
   Future<void> write(String key, String value) async {
     _values[key] = value;
+  }
+
+  @override
+  Future<void> delete(String key) async {
+    _values.remove(key);
   }
 }
 
@@ -97,6 +104,16 @@ class MacOSFileKeyStorage implements SecureKeyStorage {
       // Best effort: the container is already only accessible to this user.
     }
   }
+
+  @override
+  Future<void> delete(String key) async {
+    try {
+      final file = await _keyFile(key);
+      if (await file.exists()) await file.delete();
+    } catch (_) {
+      // A missing key file is the desired post-delete state.
+    }
+  }
 }
 
 /// Keychain-first storage with a macOS file fallback for unsigned dev builds.
@@ -129,6 +146,24 @@ class KeychainThenFileStorage implements SecureKeyStorage {
     } catch (_) {
       await _fallback.write(key, value);
     }
+  }
+
+  @override
+  Future<void> delete(String key) async {
+    // Delete from both stores: a past ad-hoc build may have written the same
+    // key to the file fallback before a signed build started using Keychain.
+    Object? error;
+    try {
+      await _keychain.delete(key);
+    } catch (e) {
+      error = e;
+    }
+    try {
+      await _fallback.delete(key);
+    } catch (e) {
+      error ??= e;
+    }
+    if (error != null) throw error;
   }
 }
 
@@ -235,9 +270,7 @@ class SecureKeyProvider {
         }
       }
       final fresh = Uint8List.fromList(Hive.generateSecureKey());
-      await _storage
-          .write(name, base64Encode(fresh))
-          .timeout(storageTimeout);
+      await _storage.write(name, base64Encode(fresh)).timeout(storageTimeout);
       _cache[name] = fresh;
       return fresh;
     } catch (_) {
@@ -253,8 +286,7 @@ class SecureKeyProvider {
 
   /// Device-pool file key for the P1-2 FRB handoff. Same infrastructure as
   /// the Hive key, separate key material.
-  Future<Uint8List?> devicePoolKey() =>
-      getOrCreateKey(name: devicePoolKeyName);
+  Future<Uint8List?> devicePoolKey() => getOrCreateKey(name: devicePoolKeyName);
 
   @visibleForTesting
   void resetForTest() {
