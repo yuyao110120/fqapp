@@ -339,6 +339,14 @@ class _FqAppState extends State<FqApp> {
                       style: style,
                     ),
                     themeMode: effectiveMode,
+                    // macOS runs the original portrait/mobile layout; Flutter's
+                    // desktop default would otherwise paint an auto Scrollbar on
+                    // every scrollable (shelf, lists), making it look like a
+                    // desktop adaptation gone wrong. Keep macOS visually
+                    // identical to the phone UI; Windows keeps its scrollbars.
+                    scrollBehavior: isMacOSPlatform
+                        ? const MacMobileScrollBehavior()
+                        : null,
                     // 全 App 文案是中文，系统文本菜单（复制/粘贴/全选）与 Material
                     // 内置文案也必须跟着中文：缺 delegates 时一律回退英文（#79）。
                     locale: const Locale('zh', 'CN'),
@@ -707,4 +715,18 @@ class _RootShellState extends State<RootShell> {
       ),
     );
   }
+}
+
+/// Scroll behavior for the macOS portrait shell: no automatic desktop
+/// scrollbars, matching the Android/iOS build. Windows keeps the platform
+/// default because its desktop shell is intentionally wide.
+class MacMobileScrollBehavior extends MaterialScrollBehavior {
+  const MacMobileScrollBehavior();
+
+  @override
+  Widget buildScrollbar(
+    BuildContext context,
+    Widget child,
+    ScrollableDetails details,
+  ) => child;
 }
