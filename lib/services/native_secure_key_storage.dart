@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'linux_libsecret_key_store.dart';
+import 'macos_key_store.dart';
 import 'migrating_secure_key_storage.dart';
 import 'platform_channel.dart';
 import 'secure_key_storage.dart';
@@ -14,6 +15,8 @@ import 'windows_dpapi_key_store.dart';
 /// | iOS | `fqapp/secure_keys` → Keychain (`SecureKeyPlugin.swift`) |
 /// | Windows | DPAPI file, [WindowsDpapiKeyStore] |
 /// | Linux | libsecret, [LinuxLibsecretKeyStore] |
+/// | macOS | Keychain when signed and entitled, else a 0600 container file,
+/// [MacOSKeyStore] |
 ///
 /// This replaced `flutter_secure_storage` so the `win32` 5.x pin from
 /// `flutter_secure_storage_windows 3.1.2` could leave the dependency graph
@@ -24,12 +27,17 @@ class NativeSecureKeyStorage implements SecureKeyStorage {
     SecureKeyStorage? mobile,
     SecureKeyStorage? windows,
     SecureKeyStorage? linux,
+    SecureKeyStorage? macOS,
   }) : _backends = {
          TargetPlatform.android:
              mobile ?? const MethodChannelSecureKeyStorage(),
          TargetPlatform.iOS: mobile ?? const MethodChannelSecureKeyStorage(),
          TargetPlatform.windows: windows ?? WindowsDpapiKeyStore(),
          TargetPlatform.linux: linux ?? LinuxLibsecretKeyStore(),
+         // Widget tests stay off the file fallback: its real I/O outlives the
+         // fake test clock (see [runningInFlutterTest]).
+         if (!runningInFlutterTest)
+           TargetPlatform.macOS: macOS ?? MacOSKeyStore(),
        };
 
   final Map<TargetPlatform, SecureKeyStorage> _backends;

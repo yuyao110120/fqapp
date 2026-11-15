@@ -704,7 +704,7 @@ class _AudioPageState extends State<AudioPage> {
     final introSummary = detail?.abstract ?? '';
     final related = c._extras.related.isEmpty ? null : c._extras.related.first;
     // Windows 桌面端用独立版式；它只需要 tones，上面这些局部变量先算好并不吃亏。
-    if (isWindowsDesktop ||
+    if (isDesktopShell ||
         (isLinuxDesktop && MediaQuery.sizeOf(context).width >= 700)) {
       return _desktopAudio(palette, chapter, tones);
     }

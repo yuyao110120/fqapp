@@ -15,6 +15,18 @@ String desktopCoreLibraryPath() {
   if (Platform.isLinux) {
     return '${File(Platform.resolvedExecutable).parent.path}/lib/libfqapi_core.so';
   }
+  if (Platform.isMacOS) {
+    // Flutter wraps native libraries in Contents/Frameworks; the embed build
+    // phase copies and ad-hoc signs the Rust core there.
+    final executableDir = File(Platform.resolvedExecutable).parent;
+    for (final candidate in <String>[
+      '${executableDir.parent.path}/Frameworks/libfqapi_core.dylib',
+      '${executableDir.path}/libfqapi_core.dylib',
+    ]) {
+      if (File(candidate).existsSync()) return candidate;
+    }
+    return File('rust/target/release/libfqapi_core.dylib').absolute.path;
+  }
   final bundled = File(
     '${File(Platform.resolvedExecutable).parent.path}/fqapi_core.dll',
   );

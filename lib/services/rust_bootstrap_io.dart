@@ -11,7 +11,8 @@ import '../src/rust/frb_generated.dart';
 /// 里的 `-force_load`），所以没有可 `DynamicLibrary.open()` 的文件。此路径下
 /// FRB 必须走 `ExternalLibrary.process()`，从进程自身导出符号里查 Rust 入口。
 ///
-/// Linux 从可执行文件旁的 lib/ 加载；其余原生平台保持 FRB 默认加载。
+/// Linux 从可执行文件旁的 lib/、macOS 从 App 包的 Frameworks/ 加载；
+/// 其余原生平台保持 FRB 默认加载。
 Future<void> initRustRuntime() {
   if (Platform.isIOS) {
     // iKnowHowToUseIt 是 FRB 对"静态链接 + process()"这种用法的确认开关：
@@ -20,7 +21,11 @@ Future<void> initRustRuntime() {
       externalLibrary: ExternalLibrary.process(iKnowHowToUseIt: true),
     );
   }
-  if (Platform.isLinux) {
+  if (Platform.isLinux || Platform.isMacOS) {
+    // Both desktops ship the core their runner bundles (Linux: `lib/` next to
+    // the executable, macOS: `Contents/Frameworks`). FRB's own loader looks for
+    // `fqapi_core.framework` and resolves ioDirectory against the working
+    // directory, which is "/" when the app is started from Finder.
     return RustLib.init(
       externalLibrary: ExternalLibrary.open(desktopCoreLibraryPath()),
     );

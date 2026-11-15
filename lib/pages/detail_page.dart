@@ -634,7 +634,7 @@ class _DetailPageState extends State<DetailPage> {
     final style = AppUiScope.of(context);
     _anchors.noteLayoutStyle(style);
     final classic = style == AppThemeStyle.classic;
-    final desktop = isWindowsDesktop && MediaQuery.sizeOf(context).width >= 700;
+    final desktop = isDesktopShell && MediaQuery.sizeOf(context).width >= 700;
     final overlay =
         (palette.dark ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark)
             .copyWith(

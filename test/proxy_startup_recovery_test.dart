@@ -75,9 +75,13 @@ void main() {
         debugDefaultTargetPlatformOverride = platform;
         await tester.pumpWidget(const MaterialApp(home: ApiServicePage()));
         await tester.pumpAndSettle();
+        // macOS is a supported desktop in this port: the desktop adapter
+        // forwards the proxy policy to the Rust core, which honors it there.
         expect(
           find.byType(CoreProxySettingsPanel),
-          platform == TargetPlatform.windows || platform == TargetPlatform.linux
+          platform == TargetPlatform.windows ||
+                  platform == TargetPlatform.linux ||
+                  platform == TargetPlatform.macOS
               ? findsOneWidget
               : findsNothing,
         );

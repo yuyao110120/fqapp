@@ -1,6 +1,6 @@
 fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
-    if target_os != "windows" && target_os != "linux" {
+    if target_os != "windows" && target_os != "linux" && target_os != "macos" {
         return;
     }
     let sources = [

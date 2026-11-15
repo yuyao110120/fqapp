@@ -214,7 +214,7 @@ class SettingsPage extends StatelessWidget {
 
     // Keep the desktop body at one element path while switching themes: its
     // nested Navigator owns the theme picker and must not be recreated mid-tap.
-    if (isWindowsDesktop) {
+    if (isDesktopShell) {
       return WenkuPage(
         header: _header(context),
         child: Padding(

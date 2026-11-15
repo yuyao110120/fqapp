@@ -1048,7 +1048,7 @@ class _SearchPageState extends State<SearchPage> {
             alignment: Alignment.topCenter,
             child: ConstrainedBox(
               constraints: BoxConstraints(
-                maxWidth: isWindowsDesktop ? double.infinity : 840,
+                maxWidth: isDesktopShell ? double.infinity : 840,
               ),
               // Upstream pads the whole search plane by the tab height, so
               // the scroll viewport starts below the search capsule and rows
@@ -1077,7 +1077,7 @@ class _SearchPageState extends State<SearchPage> {
     alignment: Alignment.topCenter,
     child: ConstrainedBox(
       constraints: BoxConstraints(
-        maxWidth: isWindowsDesktop ? double.infinity : 840,
+        maxWidth: isDesktopShell ? double.infinity : 840,
       ),
       child: Column(
         children: [
@@ -1502,7 +1502,7 @@ class _SearchPageState extends State<SearchPage> {
               // 与首页同一个阅读宽度：非 Windows 压到 840dp 并居中。
               child: ConstrainedBox(
                 constraints: BoxConstraints(
-                  maxWidth: isWindowsDesktop ? double.infinity : 840,
+                  maxWidth: isDesktopShell ? double.infinity : 840,
                 ),
                 child: _classicContent(context, feed),
               ),

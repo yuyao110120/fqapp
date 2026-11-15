@@ -9,4 +9,4 @@ import 'desktop_platform.dart';
 /// `MissingPluginException`，所以入口整体降级为「暂不支持」。
 bool get supportsVideoPlayback =>
     !kIsWeb &&
-    (defaultTargetPlatform == TargetPlatform.android || isWindowsDesktop);
+    (defaultTargetPlatform == TargetPlatform.android || isDesktopShell);

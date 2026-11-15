@@ -19,18 +19,30 @@ import 'package:smtc_windows/smtc_windows.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../widgets/desktop_login.dart';
+import '../widgets/macos_login.dart';
 import 'desktop_media.dart';
 import 'app_log.dart';
 import 'platform_channel.dart';
 import 'linux_platform.dart';
 
+bool get isWindowsDesktop =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
+
+bool get isMacOSDesktop =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
+
+/// Windows and macOS share the wide desktop shell (NavigationRail on the left,
+/// desktop page layouts). Linux's first desktop release keeps the bottom dock.
+bool get isDesktopShell => isWindowsDesktop || isMacOSDesktop;
+
+/// Platforms that use the media_kit desktop player stack: the in-process
+/// window/player channel adapter, the system media integration and the
+/// `Video` widget all come from here.
 bool get isMediaDesktop =>
     !kIsWeb &&
     (defaultTargetPlatform == TargetPlatform.windows ||
-        defaultTargetPlatform == TargetPlatform.linux);
-
-bool get isWindowsDesktop =>
-    !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
+        defaultTargetPlatform == TargetPlatform.linux ||
+        defaultTargetPlatform == TargetPlatform.macOS);
 
 /// On Windows an inactive window is still visible; it simply lacks input focus.
 /// Only hidden/paused/detached windows should defer foreground video playback.
@@ -107,13 +119,16 @@ class DesktopPlatform with WindowListener {
   bool _playerAwake = false;
   String? _readerSession;
   Timer? _readerTimer;
+  Process? _caffeinate;
+  static const _nowPlaying = MethodChannel('fqapp/now_playing');
+  bool _nowPlayingReady = false;
 
   Stream<dynamic> events(String name) =>
       (_events[name] ??= StreamController<dynamic>.broadcast()).stream;
   void _emit(String name, dynamic event) => _events[name]?.add(event);
 
   Future<void> initialize() async {
-    if (!isWindowsDesktop) return;
+    if (!isDesktopShell) return;
     MediaKit.ensureInitialized();
     await windowManager.ensureInitialized();
     PlatformChannels.invoke = invoke;
@@ -126,8 +141,8 @@ class DesktopPlatform with WindowListener {
       WindowOptions(
         size: Size(min(1280, available.width), min(800, available.height)),
         minimumSize: Size(
-          min(800, available.width),
-          min(440, available.height),
+          min(880, available.width),
+          min(560, available.height),
         ),
         center: true,
         title: '什锦铺',
@@ -149,32 +164,35 @@ class DesktopPlatform with WindowListener {
       _utterance = null;
       _emit('fqapp/system_tts_events', {'type': 'error', 'id': id});
     });
+    if (isMacOSDesktop) _installNowPlayingBridge();
     // Optional system media integration must not prevent reading or startup.
-    try {
-      await SMTCWindows.initialize();
-      _smtc = SMTCWindows();
-      _smtc!.buttonPressStream.listen((button) {
-        final action = switch (button) {
-          PressedButton.play => 'playPause',
-          PressedButton.pause => 'playPause',
-          PressedButton.next => 'next',
-          PressedButton.previous => 'prev',
-          PressedButton.stop => 'stop',
-          _ => null,
-        };
-        if (action != null) {
-          unawaited(
-            PlatformChannels.notify(
-              'fqapp/native_player',
-              'onNotificationAction',
-              {'action': action},
-            ),
-          );
-        }
-      });
-      await _smtc!.disableSmtc();
-    } catch (_) {
-      _smtc = null;
+    if (isWindowsDesktop) {
+      try {
+        await SMTCWindows.initialize();
+        _smtc = SMTCWindows();
+        _smtc!.buttonPressStream.listen((button) {
+          final action = switch (button) {
+            PressedButton.play => 'playPause',
+            PressedButton.pause => 'playPause',
+            PressedButton.next => 'next',
+            PressedButton.previous => 'prev',
+            PressedButton.stop => 'stop',
+            _ => null,
+          };
+          if (action != null) {
+            unawaited(
+              PlatformChannels.notify(
+                'fqapp/native_player',
+                'onNotificationAction',
+                {'action': action},
+              ),
+            );
+          }
+        });
+        await _smtc!.disableSmtc();
+      } catch (_) {
+        _smtc = null;
+      }
     }
   }
 
@@ -264,6 +282,10 @@ class DesktopPlatform with WindowListener {
           return null;
         }
         if (method == 'startListenForeground') {
+          if (isMacOSDesktop) {
+            await _publishNowPlaying(args);
+            return null;
+          }
           final smtc = _smtc;
           if (smtc == null) return null;
           await smtc.updateMetadata(
@@ -298,6 +320,10 @@ class DesktopPlatform with WindowListener {
           return null;
         }
         if (method == 'stopListenForeground') {
+          if (isMacOSDesktop) {
+            await _invokeNowPlaying('stop');
+            return null;
+          }
           await _smtc?.disableSmtc();
           return null;
         }
@@ -360,14 +386,23 @@ class DesktopPlatform with WindowListener {
           if (context == null) {
             throw PlatformException(code: 'not_ready', message: '窗口尚未就绪');
           }
+          if (isMacOSDesktop) return MacLogin.open(context);
           return DesktopLogin.open(context);
         }
         if (method == 'cancelLogin') {
-          DesktopLogin.cancel();
+          if (isMacOSDesktop) {
+            MacLogin.cancel();
+          } else {
+            DesktopLogin.cancel();
+          }
           return null;
         }
         if (method == 'clearSession') {
-          await DesktopLogin.clearSession();
+          if (isMacOSDesktop) {
+            await MacLogin.clearSession();
+          } else {
+            await DesktopLogin.clearSession();
+          }
           return null;
         }
       case 'fqapp/eink-refresh':
@@ -524,12 +559,86 @@ class DesktopPlatform with WindowListener {
     return request;
   }
 
+  /// Installs the Now Playing bridge that the Runner registers in Swift.
+  ///
+  /// macOS surfaces media state through MPNowPlayingInfoCenter instead of
+  /// SMTC, and the lock screen / keyboard media keys arrive as
+  /// MPRemoteCommand events. Both directions share one channel so the Dart
+  /// side keeps a single code path with Windows.
+  void _installNowPlayingBridge() {
+    _nowPlaying.setMethodCallHandler((call) async {
+      if (call.method != 'remote') return null;
+      final args = call.arguments;
+      final action = args is Map ? args['action'] : null;
+      if (action is! String || action.isEmpty) return null;
+      await PlatformChannels.notify(
+        'fqapp/native_player',
+        'onNotificationAction',
+        {'action': action},
+      );
+      return null;
+    });
+    _nowPlayingReady = true;
+  }
+
+  Future<void> _publishNowPlaying(Map args) async {
+    if (!_nowPlayingReady) return;
+    try {
+      await _nowPlaying.invokeMethod<void>('update', {
+        'title': args['title'],
+        'artist': args['episode'],
+        'album': args['album'],
+        'artworkUrl': args['coverUrl'],
+        'durationMs': (args['durationMs'] as num?)?.toInt() ?? 0,
+        'positionMs': (args['positionMs'] as num?)?.toInt() ?? 0,
+        'playing': args['playing'] == true,
+      });
+    } on MissingPluginException {
+      _nowPlayingReady = false;
+    } on PlatformException catch (error) {
+      AppLog.w('now_playing', '更新系统「正在播放」失败：${error.code}');
+    }
+  }
+
+  Future<void> _invokeNowPlaying(String method) async {
+    if (!_nowPlayingReady) return;
+    try {
+      await _nowPlaying.invokeMethod<void>(method);
+    } on MissingPluginException {
+      _nowPlayingReady = false;
+    } on PlatformException {
+      // Best effort: stopping a stale card must not break shutdown.
+    }
+  }
+
   Future<void> _updateAwake() async {
     if (isLinuxDesktop) {
       await const MethodChannel('fqapp/desktop_session').invokeMethod<void>(
         'setKeepScreenOn',
         {'on': _readerAwake || _playerAwake},
       );
+      return;
+    }
+    if (isMacOSDesktop) {
+      // macOS has no SetThreadExecutionState: hold a child caffeinate while
+      // either the reader or a player asks for the display to stay awake.
+      final wantAwake = _readerAwake || _playerAwake;
+      if (!wantAwake) {
+        _caffeinate?.kill();
+        _caffeinate = null;
+        return;
+      }
+      if (_caffeinate != null) return;
+      try {
+        final process = await Process.start('caffeinate', ['-d', '-i']);
+        if (_readerAwake || _playerAwake) {
+          _caffeinate = process;
+        } else {
+          process.kill();
+        }
+      } catch (_) {
+        // Best-effort only: staying awake must never break reading.
+      }
       return;
     }
     final call = DynamicLibrary.open('kernel32.dll')

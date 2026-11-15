@@ -323,7 +323,7 @@ class _TopBar extends StatelessWidget {
         children: [
           // 桌面壳层顶栏已经有「← 什锦铺」，这里再放一个返回键就是两个
           // 箭头上下叠着。手机上保留官方形态。
-          if (isWindowsDesktop)
+          if (isDesktopShell)
             const SizedBox(width: 16)
           else
             IconButton(

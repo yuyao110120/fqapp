@@ -380,7 +380,7 @@ class _HomePageState extends ConsumerState<HomePage> {
         child: ConstrainedBox(
           constraints: BoxConstraints(
             maxWidth:
-                isWindowsDesktop || MediaQuery.sizeOf(context).width >= 840
+                isDesktopShell || MediaQuery.sizeOf(context).width >= 840
                 ? double.infinity
                 : 840,
           ),

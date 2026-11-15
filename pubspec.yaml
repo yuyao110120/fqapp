@@ -63,8 +63,12 @@ dependencies:
   # Android/iOS/macOS/Linux 的播放库会一起进包（APK 多出 ~11 MB）。
   media_kit_libs_windows_video: 1.0.11
   media_kit_libs_linux: 1.2.1
+  # macOS 端口：media_kit 的 libmpv 预编译包（Windows/Linux 各有对应包）。
+  media_kit_libs_macos_video: ^1.1.4
   file_selector: ^1.1.0
   flutter_tts: ^4.2.5
+  # macOS 官方网页登录用 WKWebView（Windows 侧仍是 webview_windows）。
+  flutter_inappwebview: ^6.1.5
   webview_windows:
     path: third_party/webview_windows
   window_manager: ^0.5.1

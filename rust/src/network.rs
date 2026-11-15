@@ -8,16 +8,16 @@ use crate::config::NetworkProxy;
 #[derive(Clone, Default)]
 pub(crate) struct Policy {
     generation: u64,
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     proxy: Option<reqwest::Proxy>,
 }
 static POLICY: RwLock<Policy> = RwLock::new(Policy {
     generation: 0,
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     proxy: None,
 });
 
-#[cfg(any(target_os = "windows", target_os = "linux", test))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos", test))]
 impl NetworkProxy {
     pub(crate) fn validate(&self) -> Result<Option<reqwest::Proxy>, String> {
         if !self.enabled {
@@ -56,12 +56,12 @@ impl NetworkProxy {
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 pub(crate) fn apply(_config: &NetworkProxy) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 pub(crate) fn apply(config: &NetworkProxy) -> Result<(), String> {
     let proxy = config.validate()?;
     let mut policy = POLICY.write().map_err(|_| "network policy lock poisoned")?;
@@ -75,12 +75,12 @@ pub(crate) fn policy() -> Policy {
 }
 
 impl Policy {
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     pub(crate) fn configure(&self, builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
         builder
     }
 
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub(crate) fn configure(&self, builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
         match &self.proxy {
             Some(proxy) => builder.no_proxy().proxy(proxy.clone()),
@@ -91,7 +91,7 @@ impl Policy {
             }
         }
     }
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub(crate) fn configure_blocking(
         &self,
         builder: reqwest::blocking::ClientBuilder,

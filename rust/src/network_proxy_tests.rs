@@ -193,7 +193,7 @@ fn assert_media(root: &std::path::Path, url: &str, expected: &[u8]) {
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 #[test]
 fn non_desktop_ignores_proxy_configuration() {
     let invalid = crate::config::NetworkProxy {

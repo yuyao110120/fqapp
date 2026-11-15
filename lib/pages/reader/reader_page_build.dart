@@ -3,7 +3,7 @@ part of '../reader_page.dart';
 /// Reader scaffold: desktop chrome, surface, toolbar and error view.
 extension _ReaderPageBuild on _ReaderPageState {
   Widget _buildReader(BuildContext context) {
-    if (!isWindowsDesktop) return _buildReaderSurface(context);
+    if (!isDesktopShell) return _buildReaderSurface(context);
     return LayoutBuilder(
       builder: (context, bounds) => ColoredBox(
         color: _effectiveBackgroundColor,

@@ -276,7 +276,7 @@ double _dramaStripHeightFor(BuildContext context) {
 /// 留白、最近/收藏的筛选行都得自己让出这段高度。桌面端不渲染搜索行
 /// （搜索入口收敛到频道条右端图标），比手机端少一个 [_dramaSearchRowHeight]。
 double dramaTopChromeHeight(BuildContext context) =>
-    (isWindowsDesktop ? 0.0 : _dramaSearchRowHeight) +
+    (isDesktopShell ? 0.0 : _dramaSearchRowHeight) +
     _dramaStripHeightFor(context);
 
 /// 频道条的定位锚点：条数变化时只增删尾部，保留已有 index 的 `GlobalKey`。
@@ -564,7 +564,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) dramaLightPageNotifier.value = !_current.playsInline;
     });
-    if (isWindowsDesktop) {
+    if (isDesktopShell) {
       DesktopPlatform.fullscreen.addListener(_desktopFullscreenChanged);
     }
     WidgetsBinding.instance.addObserver(this);
@@ -622,7 +622,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
 
   @override
   void dispose() {
-    if (isWindowsDesktop) {
+    if (isDesktopShell) {
       DesktopPlatform.fullscreen.removeListener(_desktopFullscreenChanged);
     }
     WidgetsBinding.instance.removeObserver(this);
@@ -1685,7 +1685,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
                 ),
               ),
             if (!_recentEditing &&
-                !(isWindowsDesktop && DesktopPlatform.fullscreen.value))
+                !(isDesktopShell && DesktopPlatform.fullscreen.value))
               Positioned(
                 // 推荐（视频流）与看剧/漫剧（浅色页）切换时，下面的浅色
                 // 渐变背板会整体插入或移除，Stack 的子项下标随之错位。
@@ -1719,7 +1719,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
             // 底部 tab（50dp）是**悬浮压在 feed 上的**，所以 94dp 从 tab 底边算，
             // 提示悬在 tab 栏上方约 44dp。本页 feed 止步于 NavigationBar 顶边，
             // 同一视觉位置 = 94 - 官方 tab 高 50 = **44dp**。
-            if (_guideMounted && !isWindowsDesktop)
+            if (_guideMounted && !isDesktopShell)
               Positioned(
                 left: 16,
                 right: 16,
@@ -1828,7 +1828,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
       }
       return _GridMessage(key: Key('$gridKey.empty'), message: '暂无内容');
     }
-    final wide = isWindowsDesktop || MediaQuery.sizeOf(context).width >= 840;
+    final wide = isDesktopShell || MediaQuery.sizeOf(context).width >= 840;
     if (wide) {
       columns = dramaDesktopColumns(context);
     }
@@ -1907,7 +1907,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
     required DramaChannel channel,
     required bool active,
   }) {
-    if (isWindowsDesktop && state.error == null && items.isNotEmpty) {
+    if (isDesktopShell && state.error == null && items.isNotEmpty) {
       return active
           ? _desktopFeed(items)
           : _previewFeedPoster(
@@ -2519,7 +2519,7 @@ class _TopBarState extends State<_TopBar> {
     final available = constraints.maxWidth - ClassicHomeTabBar.sidePadding * 2;
     final cellWidth = count == 0 ? 0.0 : available / count;
     final spread =
-        !isWindowsDesktop &&
+        !isDesktopShell &&
         cellWidth.isFinite &&
         cellWidth > 0 &&
         _reservedWidths.every((width) => width <= cellWidth);
@@ -2659,7 +2659,7 @@ class _TopBarState extends State<_TopBar> {
           // 搜索框（2026-10-25 用户反馈）。
           // 桌面端不渲染这一行：分区搜索只留频道条右端的搜索图标一处
           // 入口（与 _DramaPageState._topChromeHeight 的桌面高度一致）。
-          if (!isWindowsDesktop)
+          if (!isDesktopShell)
             SizedBox(
               height: _dramaSearchRowHeight,
               child: Padding(
@@ -2680,7 +2680,7 @@ class _TopBarState extends State<_TopBar> {
                 // 官方 `ap3.xml` 的 `@id/h4f` 是 20dp 搜索钮，但手机端顶部
                 // 已有整条搜索框，两处入口重复（2026-10-25 用户要求移除）。
                 // 桌面端不渲染搜索行，搜索只留这一处入口。
-                if (isWindowsDesktop) ...[
+                if (isDesktopShell) ...[
                   IconButton(
                     key: const Key('drama_strip_search_button'),
                     tooltip: '搜索短剧',
@@ -4227,7 +4227,7 @@ class _InlineVideoLayer extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final window = constraints.biggest;
-        final wide = isWindowsDesktop || window.width >= 840;
+        final wide = isDesktopShell || window.width >= 840;
         final cacheWidth =
             (window.width * MediaQuery.devicePixelRatioOf(context)).ceil();
         return AnimatedBuilder(
@@ -4268,7 +4268,7 @@ class _InlineVideoLayer extends StatelessWidget {
                     rect: layout.video,
                     child: RotatedBox(
                       quarterTurns: playback.rotation.value,
-                      child: isWindowsDesktop
+                      child: isDesktopShell
                           ? DesktopPlatform.instance.videoSurface(
                               textureId,
                               key: ValueKey('drama_inline_${item.id}'),
@@ -4930,7 +4930,7 @@ class _LocalListState extends State<_LocalList> {
           // 16）；手机保持官方的双列 8dp。原先这里恒写 2 列，桌面上两列会被
           // 拉到近 700dp 宽，和隔壁频道完全两种排版。
           final desktopGrid =
-              isWindowsDesktop || MediaQuery.sizeOf(context).width >= 840;
+              isDesktopShell || MediaQuery.sizeOf(context).width >= 840;
           final columns = desktopGrid ? dramaDesktopColumns(context) : 3;
           final body = filtered.isEmpty
               ? empty
