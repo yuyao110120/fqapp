@@ -52,6 +52,18 @@ if [ ! -f "$APP/Contents/Frameworks/libfqapi_core.dylib" ]; then
   exit 1
 fi
 
+# An incremental Flutter build can rewrite App.framework after Xcode's own
+# CodeSign step, which leaves the nested signature stale ("nested code is
+# modified or invalid"). Re-sign the framework, then the app with its real
+# entitlements — never with --deep, which would drop them.
+ENTITLEMENTS="macos/Runner/Release.entitlements"
+if [ "$MODE" = "debug" ]; then
+  ENTITLEMENTS="macos/Runner/DebugProfile.entitlements"
+fi
+echo "==> re-sign App.framework + app"
+codesign --force --sign - "$APP/Contents/Frameworks/App.framework"
+codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP"
+
 if [ "$VERIFY" -eq 1 ]; then
   echo "==> verify code signature"
   codesign --verify --deep --strict "$APP"
