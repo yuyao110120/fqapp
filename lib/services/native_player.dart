@@ -84,7 +84,7 @@ class NativePlayer {
   static int _remoteGeneration = 0;
   static String allocateRemoteOwner() => 'media-${++_remoteGeneration}';
   static String? _remoteOwner;
-  static String? _remoteEpisode;
+  static String? _remoteChapterId;
   static int _foregroundGeneration = 0;
   static bool ownsRemoteOwner(String owner) => _remoteOwner == owner;
   static final _remoteHandlers =
@@ -241,14 +241,13 @@ class NativePlayer {
             : raw is String
             ? raw
             : null;
-        if (isLinuxDesktop && (raw is! Map || raw['owner'] != _remoteOwner)) {
-          return null;
-        }
-        if (action == 'seekTo' &&
-            raw is Map &&
-            raw['episode'] != null &&
-            raw['episode'] != _remoteEpisode) {
-          return null;
+        if (isLinuxDesktop) {
+          if (raw is! Map || raw['owner'] != _remoteOwner) return null;
+          final chapterId = raw['chapterId'];
+          if (action == 'seekTo' &&
+              (chapterId is! String || chapterId != _remoteChapterId)) {
+            return null;
+          }
         }
         if (action == 'seekTo' && raw is Map && raw['positionMs'] is int) {
           _onRemoteSeek?.call(raw['positionMs'] as int);
@@ -549,6 +548,7 @@ class NativePlayer {
   static Future<void> startListenForeground({
     required String title,
     required String episode,
+    required String chapterId,
     String coverUrl = '',
     bool playing = true,
     bool hasPrev = true,
@@ -565,7 +565,7 @@ class NativePlayer {
   }) async {
     if (isLinuxDesktop && (owner == null || owner != _remoteOwner)) return;
     final generation = ++_foregroundGeneration;
-    _remoteEpisode = episode;
+    _remoteChapterId = chapterId;
     try {
       Map? settings;
       if (isLinuxDesktop && (linuxPlayerId != null || linuxTts)) {
@@ -583,6 +583,7 @@ class NativePlayer {
       await _channel.invokeMethod<void>('startListenForeground', {
         if (isLinuxDesktop) ...{
           'owner': owner,
+          'chapterId': chapterId,
           'transportV2': true,
           'seekSupported': _onRemoteSeek != null,
           'seeked': seeked,

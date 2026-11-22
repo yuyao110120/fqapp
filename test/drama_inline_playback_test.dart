@@ -19,6 +19,7 @@ import 'package:fqapp/services/app_theme.dart';
 import 'package:fqapp/services/digg_store.dart';
 import 'package:fqapp/services/drama_channel_preferences.dart';
 import 'package:fqapp/services/drama_mute_preferences.dart';
+import 'package:fqapp/services/player_panel_preferences.dart';
 import 'package:fqapp/services/player_preferences.dart';
 import 'package:fqapp/services/shelf_store.dart';
 import 'package:fqapp/services/shell_visibility.dart';
@@ -281,7 +282,7 @@ void main() {
   testWidgets('inactive keeps the feed playing, hidden pauses it', (
     tester,
   ) async {
-    final session = _Session();
+    final session = _Session()..episodeCount = 3;
     await _mount(tester, session);
     final player = session.players.single;
     expect(player.isPlaying, isTrue);
@@ -291,6 +292,13 @@ void main() {
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
     await _flush(tester);
     expect(player.isPlaying, isFalse);
+    player.emitCompleted();
+    await _flush(tester);
+    expect(
+      session.players,
+      hasLength(1),
+      reason: 'a completion while hidden must not advance playback',
+    );
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     await _flush(tester);
     expect(player.isPlaying, isTrue);
@@ -927,6 +935,8 @@ void main() {
     // store 是进程级单例，前面用例已把 `_loaded` 置位；不 reset 就读不到
     // 这份 mock 初值（整文件跑挂、单跑过的根因）。
     DramaMutePreferences.instance.resetForTest();
+    PlayerPanelPreferences.resetVolumeForTesting();
+    addTearDown(PlayerPanelPreferences.resetVolumeForTesting);
     final session = _Session(hasFirstFrame: true);
     await _mount(tester, session);
     await _flush(tester);
@@ -936,7 +946,8 @@ void main() {
 
     await tester.tap(find.byKey(const Key('drama_mute_hint')));
     await _flush(tester);
-    expect(session.players.single.calls, contains('volume:1.0'));
+    // 从未选过音量：解除静音落在 50%，不跳到系统满音量。
+    expect(session.players.single.calls, contains('volume:0.5'));
     expect(find.byKey(const Key('drama_mute_hint')), findsNothing);
     expect(find.text('已开启声音'), findsOneWidget);
     expect(tester.takeException(), isNull);

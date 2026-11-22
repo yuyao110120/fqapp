@@ -177,9 +177,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// 待触发的调度是为哪一集排的（同一集反复出首帧不推迟截止时间）。
   int? _autoCacheTimerIndex;
 
-  /// 播放器最近一次**实际选中**的档位高度（按 [QualityMemory] 的名字套用，
+  /// 播放器最近一次**实际选中**的短边质量（按 [QualityMemory] 的名字套用，
   /// 或用户在画质菜单里换档）。null = 没选过档，播的是上游默认流。
-  int? _renditionHeight;
+  int? _renditionQualityHeight;
   int? _prefetchAttemptedGeneration;
 
   /// 还没出画面的这一集失败后，还能静默重来几次（见 [_retrySilently]）。
@@ -264,14 +264,18 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
     _diagnostics = widget.loadDiagnostics ?? PlayerLoadDiagnostics();
     _sources = EpisodeSourceCache(
-      loader: (episode) async => EpisodeSource.fromResponse(
-        await (widget.contentLoader?.call(episode) ??
-            ApiClient.instance.content(
-              episode.itemId,
-              tab: '短剧',
-              mode: 'stream',
-            )),
-      ),
+      loader: (episode, {required bool prefetch}) async =>
+          EpisodeSource.fromResponse(
+            await (widget.contentLoader?.call(episode) ??
+                ApiClient.instance.content(
+                  episode.itemId,
+                  tab: '短剧',
+                  mode: 'stream',
+                  purpose: prefetch
+                      ? PlaybackPurpose.prefetch
+                      : PlaybackPurpose.foreground,
+                )),
+          ),
     );
     if (widget.eps.isEmpty) {
       _error = PlaybackIssue.empty;
@@ -333,6 +337,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// 只对这一集有效，切走就丢。
   int? _danmakuResumeIndex;
   int? _danmakuResumeMs;
+
+  Timer? _serviceRetryTimer;
 
   /// 在飞的弹幕请求取消柄：切集与销毁时作废（官方 `w()` dispose 的等价）。
   BackendRequest? _danmakuFlight;
@@ -670,14 +676,24 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     PlayerPanelPreferences.setDefaultMute(enabled);
     // 官方默认静音是「起播时的音量」，切换时立刻作用到当前播放器，
     // 与官方「开启时默认静音/关闭默认静音」的即时反馈一致。
+    final level = enabled ? 0.0 : PlayerPanelPreferences.takeUnmuteLevel();
     final player = _player;
     if (player != null) {
       unawaited(
-        player.setVolume(enabled ? 0 : 1).catchError((Object _) {
+        player.setVolume(level).catchError((Object _) {
           // 音量设置失败不影响播放，也不该冒泡到 onError。
         }),
       );
     }
+  }
+
+  /// 桌面音量条/快捷键：档位记进 [PlayerPanelPreferences]，换集后的新播放器
+  /// 沿用这一档；拖到 0 等同开启静音，拖离 0 等同解除静音。
+  Future<void> _setPlaybackVolume(double value) async {
+    PlayerPanelPreferences.selectVolume(value);
+    final mute = PlayerPanelPreferences.defaultMute;
+    if (mute != _defaultMute && mounted) setState(() => _defaultMute = mute);
+    await _player?.setVolume(value.clamp(0.0, 1.0).toDouble());
   }
 
   /// 官方开关落盘（`video_danmaku_switch_sp`）。开关状态就绪后才允许
@@ -816,6 +832,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _unregisterFairMemoryFlush = null;
     unawaited(NativePlayer.setKeepScreenOn(false).catchError((Object _) {}));
     unawaited(_stopFloating());
+    _serviceRetryTimer?.cancel();
     _progressTimer?.cancel();
     _prefetchTimer?.cancel();
     _autoCacheTimer?.cancel();
@@ -1241,6 +1258,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     String? avoidVariant,
   }) async {
     if (!mounted || _switchingSeries || widget.eps.isEmpty) return;
+    _serviceRetryTimer?.cancel();
+    _serviceRetryTimer = null;
     _loadTrace?.finish('superseded');
     final generation = ++_loadGeneration;
     final index = _index;
@@ -1300,12 +1319,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         }
       }
       final EpisodeSource source;
-      int? renditionHeight;
+      int? renditionQualityHeight;
       if (warmSource != null) {
         source = warmSource;
-        renditionHeight = warm!.renditionHeight;
+        renditionQualityHeight = warm!.renditionQualityHeight;
       } else {
-        (source, renditionHeight) = await _episodeSource(
+        (source, renditionQualityHeight) = await _episodeSource(
           episode,
           refresh: refresh,
           avoidVariant: avoidVariant,
@@ -1317,12 +1336,20 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         return;
       }
       _currentSource = source;
+      AppLog.i(
+        'player-quality',
+        'trace=${source.sourceTraceId ?? '-'} attempt=${trace.attempt} '
+            'episode=${trace.episode} source=${trace.source} '
+            'count=${source.variants.length} '
+            'currentMatch=${source.variants.any((v) => v.url == source.url)} '
+            'qualities=[${source.variants.map((v) => '${v.name}:${v.qualityHeight}').join(',')}]',
+      );
       // 取流响应携带的分集方向：目录里没有时由它补上「全屏观看」的判据。
       if (source.vertical case final bool vertical) {
         _episodeVerticals[episode.itemId] = vertical;
       }
-      // 每次装载都重新认领：换集后没选过档就是 null，不留上一集的高度。
-      _renditionHeight = renditionHeight;
+      // 每次装载都重新认领：换集后没选过档就是 null，不留上一集的质量。
+      _renditionQualityHeight = renditionQualityHeight;
       final sourceUri = Uri.tryParse(source.url);
       final isRemote =
           sourceUri != null &&
@@ -1410,7 +1437,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       // 官方「默认静音」是**起播音量**（`tm3/b.java:17-20` 的静态标志），每次新建
       // 播放器都要重新套一遍。音量失败不能拖垮播放：官方音量只是表现层。
       try {
-        await player.setVolume(_defaultMute ? 0 : 1);
+        await player.setVolume(
+          _defaultMute ? 0 : PlayerPanelPreferences.volumeLevel,
+        );
       } catch (_) {
         // 忽略：默认音量不成立时保持播放器的默认音量。
       }
@@ -1483,7 +1512,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       },
     );
     _sources.invalidate(widget.eps[_index].itemId);
-    if (_retrySilently()) return;
+    final issue = PlaybackIssue.fromError(error);
+    // 编码不受支持是确定结论：静默重试只会再拿到同一种编码，直接给出原因。
+    if (issue.retryable &&
+        _retrySilently(
+          backoff: error is ApiException && (error.statusCode ?? 0) >= 500,
+        )) {
+      return;
+    }
     _prefetchTimer?.cancel();
     _prefetchTimer = null;
     ++_loadGeneration;
@@ -1496,7 +1532,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       unawaited(NativePlayer.updateFloating(owner: owner, playing: false));
     }
     setState(() {
-      _error = PlaybackIssue.fromError(error);
+      _error = issue;
       _initVideo = false;
       _playing = false;
     });
@@ -1539,7 +1575,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     // 预热的下一集还是旧档位：作废，快播完时按新档位重新预热。
     _dropWarm();
     _currentSource = source.withVariant(variant);
-    _renditionHeight = variant.height > 0 ? variant.height : null;
+    _renditionQualityHeight = variant.qualityHeight > 0
+        ? variant.qualityHeight
+        : null;
     final release = _teardownPlayer();
     NativePlayer? candidate;
     try {
@@ -1573,7 +1611,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       await fresh.setRate(rate);
       if (!_current(generation, fresh)) return;
       try {
-        await fresh.setVolume(_defaultMute ? 0 : 1);
+        await fresh.setVolume(
+          _defaultMute ? 0 : PlayerPanelPreferences.volumeLevel,
+        );
       } catch (_) {}
       if (!_current(generation, fresh)) return;
       if (resumeMs > 0) {
@@ -1800,6 +1840,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       onFillScreenChanged: widget.shortSeries ? _setFillScreen : null,
       defaultMute: _defaultMute,
       onDefaultMuteChanged: widget.shortSeries ? _setDefaultMute : null,
+      onPlaybackVolumeChanged: _setPlaybackVolume,
       danmaku: _danmaku.entries,
       danmakuEnabled: _danmakuEnabled,
       onToggleDanmaku: widget.shortSeries ? _toggleDanmaku : null,
@@ -1995,7 +2036,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           PlayerErrorFeedback(
             key: const ValueKey('player-error'),
             issue: _error!,
-            onRetry: widget.eps.isEmpty ? null : retry,
+            onRetry: widget.eps.isEmpty || !_error!.retryable ? null : retry,
           ),
         if (_error == null && (waiting || _player!.buffering))
           PlayerLoadingFeedback(

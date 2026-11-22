@@ -8,7 +8,8 @@ extension _ReaderPageVideo on _ReaderPageState {
   }
 
   Future<void> _loadVideoMatch() async {
-    if (widget.localOnly ||
+    if (!supportsVideoPlayback ||
+        widget.localOnly ||
         widget.chapters.isEmpty ||
         !_preferencesReady ||
         !_preferences.showVideoButton ||
@@ -40,7 +41,8 @@ extension _ReaderPageVideo on _ReaderPageState {
 
   Future<void> _openReaderVideo() async {
     final match = _videoMatch;
-    if (_openingVideo ||
+    if (!supportsVideoPlayback ||
+        _openingVideo ||
         match == null ||
         !match.available ||
         _loading ||

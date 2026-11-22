@@ -36,6 +36,7 @@ import '../widgets/detail/classic_detail_read_bar.dart';
 import '../widgets/detail/detail_archive.dart';
 import '../widgets/detail/detail_description.dart';
 import '../widgets/detail/detail_directory_sheet.dart';
+import '../widgets/detail/desktop_detail_directory.dart';
 import '../widgets/detail/detail_hero.dart';
 import '../widgets/detail/detail_id_row.dart';
 import '../widgets/detail/detail_reviews.dart';
@@ -153,6 +154,8 @@ class _DetailPageState extends State<DetailPage> {
   bool _loading = true;
   String? _detailError;
   String? _directoryError;
+  bool _directoryRetrying = false;
+  int _directoryRetryGeneration = 0;
   String? _reviewsError;
   late final String _tab;
   int _loadGeneration = 0;
@@ -372,6 +375,7 @@ class _DetailPageState extends State<DetailPage> {
 
   Future<void> _load() async {
     final generation = ++_loadGeneration;
+    ++_directoryRetryGeneration;
     ++_openGeneration;
     ++_historyGeneration;
     if (mounted) {
@@ -379,6 +383,7 @@ class _DetailPageState extends State<DetailPage> {
         _loading = true;
         _detailError = null;
         _directoryError = null;
+        _directoryRetrying = false;
         _reviewsError = null;
         _detail = null;
         _bookDetail = null;
@@ -541,6 +546,42 @@ class _DetailPageState extends State<DetailPage> {
     final generation = _loadGeneration;
     setState(() => _reviewsError = null);
     await _applyExtras(_capture(_loadExtras(_contentId)), generation);
+  }
+
+  /// Retries the novel/comic catalogue without restarting unrelated detail and
+  /// review requests.
+  Future<void> _retryDirectory() async {
+    if (_directoryRetrying) return;
+    final pageGeneration = _loadGeneration;
+    final retryGeneration = ++_directoryRetryGeneration;
+    setState(() => _directoryRetrying = true);
+    final result = await _capture(
+      (widget.directoryLoader ?? ApiClient.instance.directoryChapters)(
+        _contentId,
+        tab: _tab,
+      ),
+    );
+    if (!mounted ||
+        pageGeneration != _loadGeneration ||
+        retryGeneration != _directoryRetryGeneration) {
+      return;
+    }
+    final volumes = result.value ?? const <List<Chapter>>[];
+    final failed =
+        volumes.every((volume) => volume.isEmpty) && result.error != null;
+    setState(() {
+      _directoryRetrying = false;
+      _directoryError = failed ? userFacingError(result.error!) : null;
+      if (!failed) {
+        _allChapters = volumes.expand((volume) => volume).toList();
+        _volumes = detailArchiveVolumes(_allChapters);
+        _cachedBook = null;
+        _expandResumeVolume();
+      }
+    });
+    if (failed) return;
+    unawaited(_refreshResume());
+    unawaited(_loadCachedChapterIds(pageGeneration));
   }
 
   /// Resolves the optional review payload.
@@ -1025,6 +1066,419 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
+  Widget _desktopWorkspacePanel(
+    HomePalette palette,
+    Widget child, {
+    Key? key,
+  }) => Material(
+    key: key,
+    color: palette.surface,
+    clipBehavior: Clip.antiAlias,
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(14),
+      side: BorderSide(color: palette.line),
+    ),
+    child: child,
+  );
+
+  Widget _desktopWorkspaceHeading(
+    HomePalette palette, {
+    required String title,
+    required String kicker,
+    Widget? trailing,
+  }) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
+    child: Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: TextStyle(
+                  color: palette.ink,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  height: 1.4,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                kicker,
+                style: TextStyle(
+                  color: palette.muted,
+                  fontSize: 10,
+                  letterSpacing: 1.1,
+                  height: 1.4,
+                ),
+              ),
+            ],
+          ),
+        ),
+        ?trailing,
+      ],
+    ),
+  );
+
+  Widget _desktopWorkspaceHeader(HomePalette palette) => _desktopWorkspacePanel(
+    palette,
+    Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          DetailHero(
+            item: widget.item,
+            detail: _bookDetail,
+            onOpenAuthor: _openAuthorAction,
+            lastChapterTitle: _latestChapterTitle,
+            desktop: true,
+            compactDesktop: MediaQuery.sizeOf(context).width < 1100,
+            horizontalDesktop: true,
+          ),
+          const SizedBox(height: 16),
+          Divider(height: 1, color: palette.line),
+          const SizedBox(height: 8),
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 16,
+            runSpacing: 8,
+            children: [
+              ValueListenableBuilder<int>(
+                valueListenable: ShelfStore.instance.listenable,
+                builder: (context, _, _) => DetailShelfPill(
+                  inShelf: _inShelf,
+                  enabled: !_loading && _supported,
+                  onTap: _toggleShelf,
+                  keyName: 'detail_shelf_button_desktop',
+                ),
+              ),
+              DetailIdRow(id: _contentId, compact: true),
+            ],
+          ),
+        ],
+      ),
+    ),
+    key: const Key('desktop_detail_masthead'),
+  );
+
+  Widget _desktopWorkspaceResume(HomePalette palette) {
+    final index = _resumeIndex;
+    final progress = _archiveProgress;
+    final chapter = index != null && index >= 0 && index < _allChapters.length
+        ? _allChapters[index].title
+        : _directoryCountLabel;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          index == null ? '尚未开始' : '接着上次读到的地方',
+          style: TextStyle(
+            color: palette.muted,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            letterSpacing: .3,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          chapter,
+          key: const Key('desktop_detail_resume_title'),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: palette.ink,
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        ...?(progress == null
+            ? null
+            : <Widget>[const SizedBox(height: 8), progress]),
+      ],
+    );
+  }
+
+  Widget _desktopWorkspaceListenButton(HomePalette palette) =>
+      OutlinedButton.icon(
+        key: const Key('detail_listen_button_desktop'),
+        onPressed: _loading || _allChapters.isEmpty ? null : _openListening,
+        style: detailOutlineButtonStyle(
+          palette,
+          minimumSize: const Size(108, 44),
+        ),
+        icon: const Icon(LucideIcons.headphones, size: 16),
+        label: const Text('听书'),
+      );
+
+  Widget _desktopWorkspaceDownloadButton(HomePalette palette) =>
+      OutlinedButton.icon(
+        key: const Key('detail_download_button_desktop'),
+        onPressed: _loading || _allChapters.isEmpty ? null : _toggleDownload,
+        style: detailOutlineButtonStyle(
+          palette,
+          minimumSize: const Size(108, 44),
+        ),
+        icon: const Icon(LucideIcons.download, size: 16),
+        label: Text(_downloadProgress == null ? '下载' : '下载中'),
+      );
+
+  Widget _desktopWorkspaceActions(
+    HomePalette palette, {
+    required bool stacked,
+  }) {
+    final primary = FilledButton.icon(
+      key: const Key('detail_read_button_desktop'),
+      onPressed: _opening || _loading || _allChapters.isEmpty
+          ? null
+          : () => unawaited(_openLastPosition()),
+      style: detailPrimaryButtonStyle(
+        palette,
+        minimumSize: const Size.fromHeight(44),
+      ),
+      icon: Icon(homeKindIcon(widget.item.kind), size: 18),
+      label: Text(
+        _opening ? '正在打开…' : _readBarLabel,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+    );
+    if (stacked) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          primary,
+          if (_isBook) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(child: _desktopWorkspaceListenButton(palette)),
+                const SizedBox(width: 8),
+                Expanded(child: _desktopWorkspaceDownloadButton(palette)),
+              ],
+            ),
+          ],
+        ],
+      );
+    }
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(width: 204, child: primary),
+        if (_isBook) ...[
+          const SizedBox(width: 8),
+          _desktopWorkspaceListenButton(palette),
+          const SizedBox(width: 8),
+          _desktopWorkspaceDownloadButton(palette),
+        ],
+      ],
+    );
+  }
+
+  Widget _desktopWorkspaceActionStrip(HomePalette palette) =>
+      _desktopWorkspacePanel(
+        palette,
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final stacked = constraints.maxWidth < 940;
+              if (stacked) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _desktopWorkspaceResume(palette),
+                    const SizedBox(height: 14),
+                    _desktopWorkspaceActions(palette, stacked: true),
+                  ],
+                );
+              }
+              return Row(
+                children: [
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.only(right: 20),
+                      child: _desktopWorkspaceResume(palette),
+                    ),
+                  ),
+                  _desktopWorkspaceActions(palette, stacked: false),
+                ],
+              );
+            },
+          ),
+        ),
+        key: const Key('desktop_detail_actions'),
+      );
+
+  Widget _desktopWorkspaceSynopsis(HomePalette palette) {
+    final hasReviews =
+        _comments.comments.isNotEmpty || _comments.totalCount > 0;
+    return _desktopWorkspacePanel(
+      palette,
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _desktopWorkspaceHeading(palette, title: '作品简介', kicker: 'SYNOPSIS'),
+          Divider(height: 1, color: palette.line),
+          Padding(
+            padding: const EdgeInsets.only(top: 14),
+            child: _detailError == null
+                ? DetailDescription(
+                    text: _synopsisText,
+                    desktop: true,
+                    showHeader: false,
+                    expanded: _synopsisExpanded,
+                    onExpandedChanged: _setSynopsisExpanded,
+                  )
+                : Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: homeGutter),
+                    child: DetailInlineError(
+                      message: _detailError!,
+                      onRetry: _load,
+                    ),
+                  ),
+          ),
+          if (_series.cast.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(homeGutter, 18, homeGutter, 0),
+              child: DetailCastRow(cast: _series.cast),
+            ),
+          const SizedBox(height: 18),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Divider(height: 1, color: palette.line),
+          ),
+          if (_reviewsError != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: _reviewsSection(
+                palette,
+                hasReviews: false,
+                showEmpty: true,
+                flush: true,
+              ),
+            )
+          else if (hasReviews)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: _reviewsSection(
+                palette,
+                hasReviews: true,
+                showEmpty: false,
+                flush: true,
+              ),
+            )
+          else ...[
+            _desktopWorkspaceHeading(
+              palette,
+              title: '读者书评',
+              kicker: 'REVIEWS',
+              trailing: Text(
+                '暂无',
+                style: TextStyle(color: palette.muted, fontSize: 12),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: _emptyReviews(palette),
+            ),
+          ],
+        ],
+      ),
+      key: const Key('desktop_detail_synopsis'),
+    );
+  }
+
+  Widget _desktopWorkspaceDirectory() => DesktopDetailDirectory(
+    chapters: _allChapters,
+    currentIndex: _resumeIndex,
+    countLabel: _directoryCountLabel,
+    reversed: _catalogueReversed,
+    orderSaving: _catalogueOrderSaving,
+    error: _directoryError,
+    retrying: _directoryRetrying,
+    onRetry: _directoryError == null ? null : _retryDirectory,
+    onToggleOrder: _toggleCatalogueOrder,
+    onSelected: (index) => unawaited(_openChapter(_allChapters[index])),
+    onOpenAll: _openDirectory,
+  );
+
+  Widget _desktopWorkspaceCards(HomePalette palette, {required bool compact}) =>
+      LayoutBuilder(
+        builder: (context, constraints) {
+          if (compact || constraints.maxWidth < 900) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _desktopWorkspaceSynopsis(palette),
+                const SizedBox(height: 16),
+                _desktopWorkspaceDirectory(),
+              ],
+            );
+          }
+          return Row(
+            key: const Key('desktop_detail_workspace_columns'),
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(flex: 9, child: _desktopWorkspaceSynopsis(palette)),
+              const SizedBox(width: 16),
+              Expanded(flex: 11, child: _desktopWorkspaceDirectory()),
+            ],
+          );
+        },
+      );
+
+  Widget _desktopReadingWorkspace(HomePalette palette) {
+    final size = MediaQuery.sizeOf(context);
+    final compact = size.width < 1100;
+    final child = !_supported
+        ? _stateCard(
+            icon: LucideIcons.file_question_mark,
+            title: '暂不支持此内容类型',
+            message: '可以返回继续发现其他故事。',
+          )
+        : _loading
+        ? _loadingView(palette)
+        : Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _desktopWorkspaceHeader(palette),
+              const SizedBox(height: 14),
+              _desktopWorkspaceActionStrip(palette),
+              const SizedBox(height: 18),
+              _desktopWorkspaceCards(palette, compact: compact),
+            ],
+          );
+    return Align(
+      alignment: Alignment.topCenter,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 1240),
+        child: RefreshIndicator(
+          onRefresh: _load,
+          color: palette.eink ? palette.ink : HomePalette.accent,
+          backgroundColor: palette.surface,
+          child: SingleChildScrollView(
+            key: Key(
+              compact ? 'desktop-detail-compact' : 'desktop-detail-workspace',
+            ),
+            controller: _scroll,
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: EdgeInsets.fromLTRB(
+              compact ? 16 : 24,
+              compact ? 16 : 24,
+              compact ? 16 : 24,
+              32,
+            ),
+            child: child,
+          ),
+        ),
+      ),
+    );
+  }
+
   /// 桌面两栏布局的左栏卡片（PR #104 评审原型）：封面、书名、元信息、书架/刷新
   /// 和主操作全部收进一张白卡，主按钮不再横跨整个窗口底部。
   Widget _desktopSideCard(HomePalette palette, {bool compact = false}) {
@@ -1131,21 +1585,33 @@ class _DetailPageState extends State<DetailPage> {
   /// 铺开，行为不变。
   int _desktopSection = 0;
 
-  Widget _desktopPanel(HomePalette palette, Widget child) => Material(
-    color: palette.surface,
-    clipBehavior: Clip.antiAlias,
-    shape: RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(12),
-      side: BorderSide(color: palette.line),
-    ),
-    child: Padding(padding: const EdgeInsets.all(16), child: child),
-  );
+  Widget _desktopPanel(HomePalette palette, Widget child) {
+    return Material(
+      key: const Key('desktop-detail-panel'),
+      color: palette.surface,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: palette.line),
+      ),
+      child: child,
+    );
+  }
 
+  /// Windows 工作区:左边一张资料卡,右边一张内容面板,两栏整组居中。
+  ///
+  /// 旧版把内容列钉在 760 并居中,宽屏下右侧空出一条;>=1400 的第三栏又只剩两枚
+  /// 与资料卡重复的标签,一并去掉。现在内容列随窗口放大(>=1400 给 900,其余
+  /// 840),两栏从同一条顶边起算,整组居中而不是内容列居中。
   Widget _desktopBody(HomePalette palette) {
-    final width = MediaQuery.sizeOf(context).width;
-    final threeColumns = width >= 1400;
-    final sideWidth = width >= 1200 ? 340.0 : 320.0;
-    Widget content() => !_supported
+    if (_isBook || _isManga) return _desktopReadingWorkspace(palette);
+    final size = MediaQuery.sizeOf(context);
+    final wide = size.width >= 1400;
+    final sideWidth = wide ? 360.0 : 320.0;
+    final contentMax = wide ? 900.0 : 840.0;
+    // 面板可用高度:窗口高减去上下留白;目录节用它把面板撑到窗口底边。
+    final panelMinHeight = (size.height - 56).clamp(320.0, 1200.0);
+    Widget body({double panelMinHeight = 0}) => !_supported
         ? _stateCard(
             icon: LucideIcons.file_question_mark,
             title: '暂不支持此内容类型',
@@ -1153,7 +1619,7 @@ class _DetailPageState extends State<DetailPage> {
           )
         : _loading
         ? _loadingView(palette)
-        : _content(palette);
+        : _content(palette, panelMinHeight: panelMinHeight);
     Widget mainScroll() => RefreshIndicator(
       onRefresh: _load,
       color: palette.eink ? palette.ink : HomePalette.accent,
@@ -1162,10 +1628,10 @@ class _DetailPageState extends State<DetailPage> {
         controller: _scroll,
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.only(bottom: 32),
-        child: content(),
+        child: body(panelMinHeight: panelMinHeight),
       ),
     );
-    if (width < 1000) {
+    if (size.width < 1000) {
       return RefreshIndicator(
         onRefresh: _load,
         color: palette.eink ? palette.ink : HomePalette.accent,
@@ -1180,7 +1646,7 @@ class _DetailPageState extends State<DetailPage> {
             children: [
               _desktopSideCard(palette, compact: true),
               const SizedBox(height: 24),
-              content(),
+              body(),
             ],
           ),
         ),
@@ -1189,13 +1655,11 @@ class _DetailPageState extends State<DetailPage> {
     return Align(
       alignment: Alignment.topCenter,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 1520),
+        constraints: BoxConstraints(maxWidth: sideWidth + 24 + contentMax + 48),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
+          padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
           child: Row(
-            key: Key(
-              threeColumns ? 'desktop-detail-three' : 'desktop-detail-two',
-            ),
+            key: Key(wide ? 'desktop-detail-wide' : 'desktop-detail-two'),
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               SizedBox(
@@ -1208,27 +1672,13 @@ class _DetailPageState extends State<DetailPage> {
               const SizedBox(width: 24),
               Expanded(
                 child: Align(
-                  alignment: Alignment.topCenter,
+                  alignment: Alignment.topLeft,
                   child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 760),
+                    constraints: BoxConstraints(maxWidth: contentMax),
                     child: mainScroll(),
                   ),
                 ),
               ),
-              if (threeColumns) ...[
-                const SizedBox(width: 24),
-                SizedBox(
-                  width: 260,
-                  child: SingleChildScrollView(
-                    key: const Key('desktop-detail-information'),
-                    padding: const EdgeInsets.only(bottom: 32),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: _desktopInfoRail(palette),
-                    ),
-                  ),
-                ),
-              ],
             ],
           ),
         ),
@@ -1236,32 +1686,56 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  Widget _content(HomePalette palette) {
+  /// 内容面板:分节栏(标签 + 当前分节摘要 + 细线)与其下的正文合成一张卡。
+  Widget _content(HomePalette palette, {double panelMinHeight = 0}) {
     final hasReviews =
         _comments.comments.isNotEmpty || _comments.totalCount > 0;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _desktopSectionTabs(palette),
-        const SizedBox(height: 20),
-        _desktopPanel(
-          palette,
-          Column(
+    // 分节栏右侧只放正文没有的读数;章节总数由目录列自己给出。
+    final summary = _desktopSection == 2 && _comments.totalCount > 0
+        ? '共 ${_comments.totalCount} 条书评'
+        : '';
+    // 只有长列表的目录节把面板撑到窗口底边;简介是一段话,面板随内容收边,
+    // 免得留一张半空的卡。
+    final stretch = _desktopSection == 1 ? panelMinHeight : 0.0;
+    final edge = MediaQuery.sizeOf(context).width >= 1000 ? 20.0 : 16.0;
+    return _desktopPanel(
+      palette,
+      ConstrainedBox(
+        constraints: BoxConstraints(minHeight: stretch),
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(edge, edge - 6, edge, edge),
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: switch (_desktopSection) {
-              1 => _desktopDirectoryTab(palette),
-              2 => <Widget>[
-                _reviewsSection(
-                  palette,
-                  hasReviews: hasReviews,
-                  showEmpty: true,
-                ),
-              ],
-              _ => <Widget>[_introSection(palette, desktop: true)],
-            },
+            children: [
+              Row(
+                children: [
+                  Expanded(child: _desktopSectionTabs(palette)),
+                  if (summary.isNotEmpty)
+                    Text(
+                      summary,
+                      key: const Key('detail_section_summary'),
+                      style: TextStyle(color: palette.muted, fontSize: 12),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Divider(height: 1, thickness: 1, color: palette.line),
+              const SizedBox(height: 16),
+              ...switch (_desktopSection) {
+                1 => _desktopDirectoryTab(palette, stretch),
+                2 => <Widget>[
+                  _reviewsSection(
+                    palette,
+                    hasReviews: hasReviews,
+                    showEmpty: true,
+                  ),
+                ],
+                _ => <Widget>[_introSection(palette, desktop: true)],
+              },
+            ],
           ),
         ),
-      ],
+      ),
     );
   }
 
@@ -1279,7 +1753,7 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   Widget _introSection(HomePalette palette, {bool desktop = false}) {
-    return Column(
+    final section = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (_detailError != null) ...[
@@ -1303,13 +1777,15 @@ class _DetailPageState extends State<DetailPage> {
           ),
       ],
     );
-  }
-
-  /// `完结 共820章 · 全部 ›` — the one place the chapter count appears.
-  String get _directoryTrailing {
-    final status = _bookDetail?.statusLabel ?? '';
-    final count = '共${_allChapters.length}$_chapterUnit';
-    return '${status.isEmpty ? '' : '$status '}$count · 全部';
+    if (!desktop) return section;
+    // 桌面面板比手机宽:绑住简介的行宽,一行别排到五六十个汉字。
+    return Align(
+      alignment: Alignment.topLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 760),
+        child: section,
+      ),
+    );
   }
 
   /// The newest chapter for the hero's `更新至 …` line: the payload's own
@@ -1360,30 +1836,36 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  List<Widget> _desktopDirectoryTab(HomePalette palette) => [
-    Text(
-      _directoryTrailing,
-      style: TextStyle(color: palette.muted, fontSize: 13),
-    ),
-    const SizedBox(height: 16),
-    SizedBox(
-      height: (MediaQuery.sizeOf(context).height - 280).clamp(260.0, 640.0),
-      child: DesktopChapterSidebar(
-        width: double.infinity,
-        chapterUnit: _chapterUnit,
-        chapters: _allChapters,
-        currentIndex: _resumeIndex ?? -1,
-        onSelected: (index) => unawaited(_openChapter(_allChapters[index])),
+  /// 内嵌目录:面板撑满窗口时目录跟着铺到底,不再在面板下留一截空白。
+  List<Widget> _desktopDirectoryTab(
+    HomePalette palette,
+    double panelMinHeight,
+  ) => [
+    DecoratedBox(
+      decoration: BoxDecoration(
+        color: palette.canvas,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: palette.line),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: SizedBox(
+          height: panelMinHeight > 0
+              ? (panelMinHeight - 100).clamp(260.0, 900.0)
+              : (MediaQuery.sizeOf(context).height - 280).clamp(260.0, 640.0),
+          child: DesktopChapterSidebar(
+            width: double.infinity,
+            showBorder: false,
+            backgroundColor: palette.canvas,
+            chapterUnit: _chapterUnit,
+            chapters: _allChapters,
+            currentIndex: _resumeIndex ?? -1,
+            onSelected: (index) => unawaited(_openChapter(_allChapters[index])),
+          ),
+        ),
       ),
     ),
   ];
-
-  /// Three-column desktop rail: the tags the main column omits.
-  List<Widget> _desktopInfoRail(HomePalette palette) {
-    final detail = _bookDetail;
-    if (detail == null || detail.tags.isEmpty) return const [];
-    return [DetailTagChips(tags: detail.tags, desktop: true)];
-  }
 
   Widget _desktopSectionTabs(HomePalette palette) {
     const labels = ['简介', '目录', '评论'];

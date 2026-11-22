@@ -280,6 +280,10 @@ class _ReaderBookNotesState extends State<ReaderBookNotes> {
                       label: Text(filter.label),
                       selected: _filter == filter,
                       materialTapTargetSize: MaterialTapTargetSize.padded,
+                      // 标签保持正文对比度，选中态由强调底色和勾选标记区分。
+                      selectedColor: preset.accentColor.withValues(alpha: .12),
+                      backgroundColor: preset.fieldColor,
+                      labelStyle: TextStyle(color: preset.textColor),
                       onSelected: (_) => setState(() => _filter = filter),
                     ),
                 ],

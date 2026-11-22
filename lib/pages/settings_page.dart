@@ -36,19 +36,24 @@ import '../services/native_player.dart';
 import '../services/player_layout_preferences.dart';
 import '../services/player_preferences.dart';
 import '../services/book_open_preferences.dart';
+import '../services/boss_key_preferences.dart';
 import '../services/drama_mute_preferences.dart';
 import '../services/haptic_preferences.dart';
 import '../services/library_store.dart';
 import '../widgets/desktop_settings_body.dart';
+import '../widgets/desktop_shell_scope.dart';
+import '../widgets/home/home_design.dart';
 import '../widgets/settings/settings_archive_rows.dart';
 import '../widgets/settings/settings_widgets.dart';
 import '../widgets/settings/classic_settings_icons.dart';
 import '../widgets/wenku/wenku_ui.dart';
 import 'about_page.dart';
 import 'api_service_page.dart';
+import 'boss_key_settings_page.dart';
 import 'cached_books_page.dart';
 import 'cached_dramas_page.dart';
 import 'library_backup_page.dart';
+import 'multi_device_sync_page.dart';
 import 'settings_category_page.dart';
 import 'system_tts_settings_page.dart';
 import 'text_replacement_page.dart';
@@ -58,14 +63,47 @@ import 'ai_reading/settings/ai_settings_page.dart';
 
 /// Settings home: a list of category entries (PiliPlus multi-level
 /// navigation). Each category opens its own archive option page.
-class SettingsPage extends StatelessWidget {
+class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  @override
+  void initState() {
+    super.initState();
+    if (isDesktopShell) DesktopShellState.enterSettings();
+  }
+
+  @override
+  void dispose() {
+    if (isDesktopShell) DesktopShellState.exitSettings();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     // 开关读的是 ValueNotifier：先把持久化的值读出来，读到后自动重绘。
     unawaited(BookOpenPreferences.instance.load());
+    if (!isMediaDesktop) return _buildContent(context);
+    unawaited(BossKeyPreferences.instance.load());
+    return ListenableBuilder(
+      listenable: Listenable.merge([
+        BossKeyPreferences.instance.enabled,
+        BossKeyPreferences.instance.shortcut,
+      ]),
+      builder: (context, _) => _buildContent(context),
+    );
+  }
+
+  Widget _buildContent(BuildContext context) {
     final style = AppStyleTokens.of(context);
+    final bossKeyPrefs = BossKeyPreferences.instance;
+    final bossKeyValue = bossKeyPrefs.enabled.value
+        ? bossKeyPrefs.shortcut.value.formatLabel()
+        : '已关闭';
     final categories = <SettingsCategory>[
       SettingsCategory(
         icon: SettingsCategoryIcons.appearance,
@@ -161,11 +199,29 @@ class SettingsPage extends StatelessWidget {
             if (!isMediaDesktop) _videoDecoderItem(),
           ],
         ),
+      if (isMediaDesktop)
+        SettingsCategory(
+          icon: SettingsCategoryIcons.bossKey,
+          title: '老板键',
+          subtitle: '全局快捷键隐藏窗口并暂停播放',
+          value: bossKeyValue,
+          pageBuilder: (_) => const BossKeySettingsPage(),
+          items: const [],
+        ),
       SettingsCategory(
         icon: SettingsCategoryIcons.data,
         title: '数据',
-        subtitle: '备份与恢复、缓存、阅读与播放历史',
+        subtitle: '多端同步、备份与恢复、缓存与历史',
         items: [
+          SettingsItem(
+            icon: Icons.sync,
+            title: '多端同步',
+            subtitle: '仅同步番茄收藏、阅读播放记录和已看剧集',
+            onTap: (context, _) => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const MultiDeviceSyncPage()),
+            ),
+          ),
           SettingsItem(
             icon: CupertinoIcons.folder,
             title: '备份与导入',
@@ -215,21 +271,13 @@ class SettingsPage extends StatelessWidget {
     // Keep the desktop body at one element path while switching themes: its
     // nested Navigator owns the theme picker and must not be recreated mid-tap.
     if (isDesktopShell) {
-      return WenkuPage(
-        header: _header(context),
-        child: Padding(
-          padding: EdgeInsets.only(
-            top:
-                MediaQuery.paddingOf(context).top + FrostedHeader.toolbarHeight,
-          ),
-          child: DesktopSettingsBody(
-            categories: style.isClassic
-                ? [
-                    for (final category in categories)
-                      _classicCategory(category),
-                  ]
-                : categories,
-          ),
+      final palette = HomePalette.of(context);
+      return Scaffold(
+        backgroundColor: palette.canvas,
+        body: DesktopSettingsBody(
+          categories: style.isClassic
+              ? [for (final category in categories) _classicCategory(category)]
+              : categories,
         ),
       );
     }

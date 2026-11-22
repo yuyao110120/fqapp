@@ -41,7 +41,29 @@ jobs:
     steps:
       - name: Prepare isolated Arch snapshot (never the host)
         run: |
-          printf 'Server = https://archive.archlinux.org/repos/2026/11/09/$repo/os/$arch\n' > /etc/pacman.d/mirrorlist
+          # Both official archive endpoints serve the same pinned snapshot.
+          printf '%s\n' \
+            'Server = https://umea.archive.pkgbuild.com/repos/2026/11/09/$repo/os/$arch' \
+            'Server = https://archive.archlinux.org/repos/2026/11/09/$repo/os/$arch' \
+            > /etc/pacman.d/mirrorlist
+          # Snapshot package links may redirect to unavailable historical storage.
+          # Fetch the exact filename from the archive; pacman still verifies it.
+          cat > /tmp/arch-archive-download <<'DOWNLOAD'
+          #!/usr/bin/bash
+          set -euo pipefail
+          url=$1
+          filename=${url##*/}
+          case "$filename" in
+            *.pkg.tar.*)
+              package=${filename%-*-*-*}
+              url="https://umea.archive.pkgbuild.com/packages/${package:0:1}/$package/$filename"
+              ;;
+          esac
+          curl --fail --location --retry 3 --retry-delay 2 \
+            --connect-timeout 10 --max-time 300 --output "$2" --url "$url"
+          DOWNLOAD
+          chmod +x /tmp/arch-archive-download
+          sed -i '/^\[options\]/a XferCommand = /tmp/arch-archive-download %u %o' /etc/pacman.conf
           pacman -Syyuu --noconfirm
           pacman -S --needed --noconfirm base-devel git clang cmake ninja pkgconf gtk3 libsecret mpv libepoxy libglvnd libx11 dbus xdg-utils xdg-user-dirs hicolor-icon-theme rust python nodejs ffmpeg patchelf desktop-file-utils zstd unzip xz curl speech-dispatcher libspeechd espeak-ng xdg-desktop-portal
           useradd -m builder
@@ -72,6 +94,7 @@ jobs:
           CARGO_NET_OFFLINE=false cargo fetch --manifest-path rust/Cargo.toml --locked
           flutter analyze --no-pub
           python test/linux_packaging_test.py
+          python test/linux_tts_lifetime_test.py
           bash scripts/build_linux_package.sh /tmp/arch-package HEAD
           git diff --exit-code -- pubspec.lock rust/Cargo.lock
           pacman -Q > build/validation/linux/arch-packages.txt

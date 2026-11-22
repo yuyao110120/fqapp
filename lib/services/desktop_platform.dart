@@ -106,6 +106,7 @@ class DesktopPlatform with WindowListener {
   static final navigatorKey = GlobalKey<NavigatorState>();
   static final readerBrightness = ValueNotifier<double>(1);
   static final fullscreen = ValueNotifier<bool>(false);
+  static final maximized = ValueNotifier<bool>(false);
   final _events = <String, StreamController<dynamic>>{};
   final _players = <int, _DesktopPlayer>{};
   final _tts = FlutterTts();
@@ -146,10 +147,14 @@ class DesktopPlatform with WindowListener {
         ),
         center: true,
         title: '什锦铺',
+        titleBarStyle: TitleBarStyle.hidden,
       ),
       () async {
         await windowManager.show();
         await windowManager.focus();
+        try {
+          maximized.value = await windowManager.isMaximized();
+        } catch (_) {}
       },
     );
     _tts.setCompletionHandler(() {
@@ -219,8 +224,57 @@ class DesktopPlatform with WindowListener {
   }
 
   Future<void> setFullscreen(bool value) async {
-    await windowManager.setFullScreen(value);
+    try {
+      await windowManager.setFullScreen(value);
+    } catch (_) {}
     fullscreen.value = value;
+    if (!value) {
+      try {
+        maximized.value = await windowManager.isMaximized();
+      } catch (_) {}
+    }
+  }
+
+  Future<void> minimizeWindow() async {
+    if (!isDesktopShell) return;
+    try {
+      await windowManager.minimize();
+    } catch (_) {}
+  }
+
+  Future<void> toggleMaximizeWindow() async {
+    if (!isDesktopShell) return;
+    try {
+      if (await windowManager.isMaximized()) {
+        await windowManager.unmaximize();
+      } else {
+        await windowManager.maximize();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> closeWindow() async {
+    if (!isDesktopShell) return;
+    try {
+      await windowManager.close();
+    } catch (_) {}
+  }
+
+  Future<void> startWindowDragging() async {
+    if (!isDesktopShell) return;
+    try {
+      await windowManager.startDragging();
+    } catch (_) {}
+  }
+
+  @override
+  void onWindowMaximize() {
+    maximized.value = true;
+  }
+
+  @override
+  void onWindowUnmaximize() {
+    maximized.value = false;
   }
 
   @override
@@ -273,7 +327,11 @@ class DesktopPlatform with WindowListener {
           );
           _players[id] = host;
           unawaited(
-            host.open(args['cdnUrl'] as String, args['keyHex'] as String),
+            host.open(
+              args['cdnUrl'] as String,
+              args['keyHex'] as String,
+              startPositionMs: args['startPositionMs'],
+            ),
           );
           return {'playerId': id};
         }
@@ -930,13 +988,43 @@ String decodeDesktopText(Uint8List bytes) {
   }
 }
 
+/// `create` 下发的续播起点（`startPositionMs`，> 0 才有）落到 media_kit 的
+/// [Media.start] 上。
+///
+/// media_kit 在 mpv 的 on_load 钩子里把它设成 `start` 属性，即 prepare 前生效，
+/// 与 Android 端约定一致；Dart 侧 `NativePlayer` 也已按起点显示进度和弹幕锚点。
+/// 加密流走本地 CENC 代理，起点处的读取是普通的 `Range: bytes=N-` 请求，
+/// 与拖动进度条走同一条路。
+@visibleForTesting
+Media desktopPlaybackMedia(String uri, Object? startPositionMs) {
+  final startMs = startPositionMs is num ? startPositionMs.toInt() : 0;
+  return Media(
+    uri,
+    start: startMs > 0 ? Duration(milliseconds: startMs) : null,
+  );
+}
+
+/// 为刚建好的 media_kit [VideoController] 请求一帧。
+///
+/// `VideoController` 构造时用 `addPostFrameCallback` 推迟纹理创建，
+/// `Player.open` 又会等 `VideoController` 初始化完成；而 `addPostFrameCallback`
+/// 本身不请求帧。窗口静止时（例如 Windows 短剧 feed 起播第一集，画面上只有
+/// 一张静态封面），没有任何东西请求新帧，`open` 就一直挂着，直到鼠标划过
+/// 窗口触发重绘，或 Dart 侧 25 秒的创建超时报「播放失败」。后续集数不受影响，
+/// 因为正在播的视频会持续驱动帧。Windows 与 Linux 都会遇到。
+@visibleForTesting
+void requestVideoControllerFrame() => WidgetsBinding.instance.scheduleFrame();
+
+/// 诊断构建开关：`--dart-define=FQAPP_PLAYER_DIAGNOSTICS=true` 时把 mpv 日志
+/// 放宽到 info 级写进应用日志，用来排查「某些剧集播不了」。产品构建不开。
+const desktopPlayerDiagnostics = bool.fromEnvironment(
+  'FQAPP_PLAYER_DIAGNOSTICS',
+);
+
 class _DesktopPlayer {
   _DesktopPlayer(this.id, this.emit) {
     video = VideoController(player);
-    // media_kit initializes textures after a frame, including on an idle window.
-    if (defaultTargetPlatform == TargetPlatform.linux) {
-      WidgetsBinding.instance.scheduleFrame();
-    }
+    requestVideoControllerFrame();
     void event(String type, dynamic value) {
       if (!disposed) emit({'playerId': id, 'type': type, 'value': value});
     }
@@ -952,8 +1040,18 @@ class _DesktopPlayer {
       player.stream.completed.listen((v) => event('completed', v)),
       player.stream.width.listen((_) => _size()),
       player.stream.height.listen((_) => _size()),
-      player.stream.error.listen(
-        (_) => event('error', {'message': '媒体播放失败，请重试或切换清晰度'}),
+      player.stream.error.listen((message) {
+        // 界面只给通用提示；原始错误（解码器、HTTP 状态、解密）留在日志里排查。
+        AppLog.w('desktop-player', 'id=$id mpv error: $message');
+        event('error', {'message': '媒体播放失败，请重试或切换清晰度'});
+      }),
+      // 默认只有 error 级会到这里；诊断构建放宽到 info，能看到开流、
+      // 选轨、编码格式、硬解是否生效等起播过程。
+      player.stream.log.listen(
+        (log) => AppLog.d(
+          'mpv',
+          'id=$id [${log.prefix}] ${log.level}: ${log.text.trimRight()}',
+        ),
       ),
     ]);
     unawaited(
@@ -962,13 +1060,17 @@ class _DesktopPlayer {
   }
   final int id;
   final void Function(Map<String, dynamic>) emit;
-  final player = Player();
+  final player = Player(
+    configuration: const PlayerConfiguration(
+      logLevel: desktopPlayerDiagnostics ? MPVLogLevel.info : MPVLogLevel.error,
+    ),
+  );
   late final VideoController video;
   final subscriptions = <StreamSubscription<dynamic>>[];
   final ready = Completer<void>();
   DesktopMedia? media;
   bool disposed = false;
-  Future<void> open(String url, String key) async {
+  Future<void> open(String url, String key, {Object? startPositionMs}) async {
     ready.future.ignore();
     try {
       var playbackUrl = url;
@@ -984,7 +1086,10 @@ class _DesktopPlayer {
       // Plain audio/video follows the original URI player contract. Some
       // public audio origins return 200 only and must not require CENC Range I/O.
       if (disposed) return;
-      await player.open(Media(playbackUrl), play: false);
+      await player.open(
+        desktopPlaybackMedia(playbackUrl, startPositionMs),
+        play: false,
+      );
       AppLog.d('desktop-player', 'id=$id opened paused');
       if (disposed) return;
       ready.complete();

@@ -19,6 +19,7 @@ import 'package:fqapp/services/shelf_store.dart';
 import 'package:fqapp/widgets/app_ui/app_ui_scope.dart';
 import 'package:fqapp/widgets/detail/classic_detail_read_bar.dart';
 import 'package:fqapp/widgets/detail/detail_chapter_row.dart';
+import 'package:fqapp/widgets/detail/detail_cover_tile.dart';
 import 'package:fqapp/widgets/home/home_design.dart';
 import 'package:fqapp/widgets/detail/detail_archive.dart';
 import 'package:fqapp/widgets/detail/detail_hero.dart';
@@ -62,6 +63,12 @@ void main() {
         tester,
         requests: requests,
         withProgress: true,
+        detailData: const {
+          'abstract': '一段关于宗门成长的故事。',
+          'creation_status': '1',
+          'category': '玄幻',
+          'tags': '废土,群像',
+        },
       );
       addTearDown(store.dispose);
 
@@ -72,6 +79,28 @@ void main() {
       expect(find.byType(ClassicDetailReadBar), findsOneWidget);
       expect(find.byType(DetailHero), findsOneWidget);
       expect(find.byKey(const Key('detail_book_title')), findsOneWidget);
+      // 经典手机版:标签整宽排在封面下方(不再是固定 20.5dp 的裁剪行)。
+      final heroTags = find.byKey(const Key('detail_hero_tags'));
+      expect(heroTags, findsOneWidget);
+      expect(
+        tester.getTopLeft(heroTags).dy,
+        greaterThanOrEqualTo(
+          tester.getBottomLeft(find.byType(DetailCoverTile)).dy,
+        ),
+      );
+      for (final tag in ['废土', '群像']) {
+        expect(
+          find.descendant(of: heroTags, matching: find.text(tag)),
+          findsOneWidget,
+        );
+      }
+      // 换行间距 > 0 说明用的是自然高度的 Wrap,而不是被裁掉的一行 Row。
+      expect(tester.widget<Wrap>(heroTags).runSpacing, greaterThan(0));
+      // 主阅读 CTA 至少 48dp,并随字号增高。
+      expect(
+        tester.getSize(find.byKey(const Key('detail_read_button'))).height,
+        greaterThanOrEqualTo(48),
+      );
 
       // 简介 uses the old 15sp text header, not the archive code block.
       expect(find.text('简介'), findsOneWidget);
@@ -131,7 +160,10 @@ void main() {
 
       final openAll = find.byKey(const Key('detail_directory_button'));
       expect(openAll, findsOneWidget);
-      expect(find.textContaining('共30章 · 全部 ›'), findsOneWidget);
+      // 章节数搬到了标题下方自己的元信息行,「全部目录 ›」是独立控件。
+      expect(find.text('连载中 共30章'), findsOneWidget);
+      expect(find.text('全部目录 ›'), findsOneWidget);
+      expect(tester.getSize(openAll).height, greaterThanOrEqualTo(48));
       await tester.tap(openAll);
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('detail_directory_search')), findsOneWidget);
@@ -311,6 +343,31 @@ void main() {
           find.byKey(const Key('detail_preview_chapters')),
           findsOneWidget,
         );
+        expect(find.text('全部目录 ›'), findsOneWidget);
+        expect(find.text('查看现有章节 ›'), findsNothing);
+        if (media.kind == 'video') {
+          await tester.pumpWidget(const SizedBox.shrink());
+          final partialStore = await _pumpClassic(
+            tester,
+            item: _item(media.kind),
+            chapters: 1,
+            catalogueComplete: false,
+          );
+          addTearDown(partialStore.dispose);
+          expect(find.text('完整目录暂不可用'), findsOneWidget);
+          expect(find.text('查看现有章节 ›'), findsOneWidget);
+          expect(find.text('全部目录 ›'), findsNothing);
+          final action = find.byKey(const Key('detail_directory_button'));
+          expect(tester.widget<HomePressable>(action).semanticLabel, '查看现有章节');
+          await tester.ensureVisible(action);
+          await tester.tap(action);
+          await tester.pumpAndSettle();
+          expect(
+            find.byKey(const Key('detail_directory_search')),
+            findsOneWidget,
+          );
+          expect(find.text('完整目录暂不可用'), findsWidgets);
+        }
       });
     }
   });
@@ -773,11 +830,15 @@ Future<AppThemeStyleStore> _pumpClassic(
   DetailExtras? extras,
   Future<String> Function(Chapter chapter)? chapterLoader,
   int chapters = 30,
+  bool catalogueComplete = true,
+  Map<String, dynamic>? detailData,
 }) async {
   final store = AppThemeStyleStore();
   await store.select(AppThemeStyle.classic);
-  await tester.binding.setSurfaceSize(size);
-  addTearDown(() => tester.binding.setSurfaceSize(null));
+  tester.view.physicalSize = size;
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
   addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
   final book = item ?? _book;
   await tester.pumpWidget(
@@ -803,7 +864,9 @@ Future<AppThemeStyleStore> _pumpClassic(
         detailLoader: (id, {String tab = '小说'}) async {
           requests?.add('$tab:$id');
           return {
-            'data': {'abstract': '一段关于宗门成长的故事。', 'creation_status': '1'},
+            'data':
+                detailData ??
+                {'abstract': '一段关于宗门成长的故事。', 'creation_status': '1'},
           };
         },
         directoryLoader: (id, {String tab = '小说'}) async {
@@ -816,6 +879,7 @@ Future<AppThemeStyleStore> _pumpClassic(
                 itemId: 'chapter-${index + 1}',
                 title: '第${index + 1}章 故事的另一种可能',
                 volumeName: '',
+                hasKnownIndex: catalogueComplete,
               ),
             ),
           ];

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../models/media_item.dart';
+import 'chapter_text_formatter.dart';
 
 /// Where a finished export landed, as the platform reported it.
 @immutable
@@ -109,15 +110,15 @@ class BookTxtExportState {
   bool get canCancel => running && !writing;
 }
 
-/// Whole-book TXT export: a fresh directory plus every chapter re-fetched from
-/// the network, assembled in the same shape the backend's `/api/download`
-/// serves (`# 标题` line, body, blank line).
+/// Whole-book TXT export: a fresh directory plus cached or fetched chapter
+/// bodies, assembled as a `# 标题` line, body and one blank line per chapter.
 ///
 /// Nothing is written until the last chapter is in hand. Cancellation is only
 /// available during fetching; once saving begins, the platform result wins.
 ///
-/// Chapter bodies are fetched through [chapterLoader], which production wires to
-/// `ApiClient.contentText` — the single request funnel CRIT-005 requires.
+/// Missing bodies are fetched through [chapterLoader], which production keeps
+/// behind ApiClient's request funnel. At most three chapters are prefetched;
+/// assembly and progress stay in directory order.
 class BookTxtExport extends ValueNotifier<BookTxtExportState> {
   BookTxtExport({
     required this.directoryLoader,
@@ -163,18 +164,38 @@ class BookTxtExport extends ValueNotifier<BookTxtExportState> {
     var completed = 0;
     var failed = 0;
     value = BookTxtExportState(running: true, total: chapters.length);
+    var nextChapter = 0;
+    final pending = <Future<String?>>[];
+    Future<String?> loadBody(Chapter chapter) async {
+      if (!_alive(job)) return null;
+      try {
+        final text = await chapterLoader(chapter).timeout(timeout);
+        if (!_alive(job)) return null;
+        return exportChapterBody(text, chapterTitle: chapter.title);
+      } catch (_) {
+        // Prefetched failures may never be awaited after cancellation.
+        return null;
+      }
+    }
+
+    void fillWindow() {
+      while (_alive(job) &&
+          nextChapter < chapters.length &&
+          pending.length < 3) {
+        pending.add(loadBody(chapters[nextChapter++]));
+      }
+    }
+
+    fillWindow();
     for (final chapter in chapters) {
       if (!_alive(job)) return;
+      final body = await pending.removeAt(0);
+      if (!_alive(job)) return;
       buffer.write('# ${chapter.title}\n');
-      try {
-        final body = (await chapterLoader(chapter).timeout(timeout)).trim();
-        if (!_alive(job)) return;
-        if (body.isNotEmpty) {
-          buffer.write(body);
-          buffer.write('\n');
-        }
-      } catch (_) {
-        if (!_alive(job)) return;
+      if (body != null) {
+        buffer.write(body);
+        buffer.write('\n');
+      } else {
         // One dead chapter must not cost the user the other 999.
         failed++;
       }
@@ -187,6 +208,7 @@ class BookTxtExport extends ValueNotifier<BookTxtExportState> {
         total: chapters.length,
         failed: failed,
       );
+      fillWindow();
     }
     if (!_alive(job)) return;
 
@@ -241,6 +263,37 @@ String _report(String title, ExportTarget target, int completed, int failed) {
   final missing = failed == 0 ? '' : '，$failed 章取文失败，已保留标题';
   return '已导出《$title》$completed 章$missing\n$where';
 }
+
+/// Produces the body placed below one chapter's exported `# title` line.
+///
+/// Cache and network input share this path so title removal and invisible
+/// separator cleanup have one owner. Invisible-only paragraphs are discarded
+/// before the title lookup, allowing captions and images to stay in place while
+/// a later body paragraph that repeats the title remains untouched.
+String? exportChapterBody(String text, {required String chapterTitle}) {
+  final source = ChapterContent.fromCacheText(text);
+  final blocks = <ChapterBlock>[
+    for (final block in source.blocks)
+      if (block is! ChapterParagraph || _hasExportText(block.text)) block,
+  ];
+  final normalized = ChapterContent(
+    blocks: blocks,
+    legacyText: _cleanExportText(source.legacyText),
+    illustrationsChecked: source.illustrationsChecked,
+    paragraphIdsChecked: source.paragraphIdsChecked,
+    timelineChecked: source.timelineChecked,
+  ).withoutLeadingTitle(chapterTitle);
+  final body = _cleanExportText(normalized.legacyText);
+  return body.isEmpty ? null : body;
+}
+
+String _cleanExportText(String text) =>
+    splitChapterParagraphs(text).where(_hasExportText).join('\n');
+
+bool _hasExportText(String text) =>
+    text.replaceAll(_exportBlankMarkers, '').isNotEmpty;
+
+final _exportBlankMarkers = RegExp(r'[\s\u200B\uFEFF]');
 
 /// `<书名>.txt`, folded into a name a Downloads entry accepts: separators and
 /// other reserved characters become `_`, control characters are dropped, and

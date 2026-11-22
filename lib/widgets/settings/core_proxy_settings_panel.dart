@@ -208,7 +208,7 @@ class _CoreProxySettingsPanelState extends State<CoreProxySettingsPanel> {
             ),
           ),
           const SizedBox(height: 10),
-          if (isWindowsDesktop || widget.discover != null) ...[
+          if (isDesktopShell || widget.discover != null) ...[
             Align(
               alignment: Alignment.centerLeft,
               child: GlassTextButton(

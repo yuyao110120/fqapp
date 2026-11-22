@@ -1,10 +1,11 @@
-"""Focused release-input and compiler-argument regressions; no Flutter build."""
+"""Focused release-input, compiler-argument and ELF regressions; no Flutter build."""
 
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -135,6 +136,107 @@ out.mkdir(parents=True)
                          "user.email=test@example.invalid", "commit", "-qm", "fixture")
         (bundle / "generated.cmake").write_text("# generated build output\n")
         self.run_command("python", "packaging/arch/check_source.py", str(self.root))
+
+
+class BundleClosureTest(unittest.TestCase):
+    def setUp(self):
+        source = Path(__file__).resolve().parents[1]
+        self.checker = source / "packaging/arch/prepare_bundle.py"
+        scratch = source / "build/packaging-tests"
+        scratch.mkdir(parents=True, exist_ok=True)
+        temp = tempfile.TemporaryDirectory(dir=scratch)
+        self.addCleanup(temp.cleanup)
+        self.bundle = Path(temp.name) / "bundle with spaces"
+        self.lib = self.bundle / "lib"
+        self.lib.mkdir(parents=True)
+        assets = self.bundle / "data/flutter_assets"
+        assets.mkdir(parents=True)
+        (assets / "AssetManifest.bin").touch()
+        (assets.parent / "icudtl.dat").touch()
+        self.compile("lib/libclosure_leaf.so", "int leaf(void) { return 42; }",
+                     "-shared", "-fPIC", "-nostdlib")
+        self.compile("lib/libfqapi_core.so", "int core(void) { return 42; }",
+                     "-shared", "-fPIC", "-nostdlib")
+        shutil.copy(self.lib / "libfqapi_core.so", self.lib / "libapp.so")
+        self.compile("lib/libflutter_linux_gtk.so",
+                     "int leaf(void); int flutter(void) { return leaf(); }",
+                     "-shared", "-fPIC", "-nostdlib", "-Llib", "-lclosure_leaf",
+                     "-Wl,-rpath,$ORIGIN")
+        self.compile("fqapp", "int flutter(void); int main(void) { return flutter(); }",
+                     "-Llib", "-Wl,--no-as-needed", "-lgcc_s", "-lflutter_linux_gtk",
+                     "-Wl,-rpath-link,lib")
+        for library in self.lib.iterdir():
+            library.chmod(0o644)
+
+    def compile(self, output, code, *flags):
+        subprocess.run(["cc", "-o", output, "-x", "c", "-", *flags],
+                       input=code, text=True, cwd=self.bundle, check=True)
+
+    def check_bundle(self, *python_flags, env=None):
+        return subprocess.run([sys.executable, *python_flags, self.checker, self.bundle],
+                              env=env, capture_output=True, text=True)
+
+    def test_resolves_0644_libraries_using_normalized_runpaths_in_place(self):
+        flutter = self.lib / "libflutter_linux_gtk.so"
+        subprocess.run(["patchelf", "--set-rpath", "/nonexistent", flutter], check=True)
+        result = self.check_bundle()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"libflutter_linux_gtk.so => {flutter} (", result.stdout)
+        self.assertIn(f"libclosure_leaf.so => {self.lib / 'libclosure_leaf.so'} (", result.stdout)
+        self.assertEqual(flutter.stat().st_mode & 0o777, 0o644)
+
+    def test_missing_transitive_dependency_reports_runner_and_library(self):
+        elsewhere = self.bundle.parent
+        leaf = self.lib / "libclosure_leaf.so"
+        leaf.rename(elsewhere / leaf.name)
+        result = self.check_bundle(env=dict(os.environ, LD_LIBRARY_PATH=str(elsewhere)))
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(str(self.bundle / "fqapp"), result.stderr)
+        self.assertIn(leaf.name, result.stderr)
+
+    def test_rejects_successful_probe_without_dependency_resolutions(self):
+        # Replace only the external loader probe. Keep readelf and patchelf real.
+        simulate_probe = """\
+import pathlib, runpy, subprocess, sys
+from unittest.mock import patch
+
+output, script = sys.argv[1:3]
+sys.argv = sys.argv[2:]
+run = subprocess.run
+
+def probe(args, **kwargs):
+    if pathlib.Path(args[0]).name == "ldd" or args[1] == "--list":
+        return subprocess.CompletedProcess(args, 0, output, "")
+    return run(args, **kwargs)
+
+with patch("subprocess.run", probe):
+    runpy.run_path(script, run_name="__main__")
+"""
+        for output in ("", "linux-vdso.so.1 (0x1234)\n",
+                       "/lib64/ld-linux-x86-64.so.2 (0x1234)\n"):
+            with self.subTest(output=output):
+                result = self.check_bundle("-c", simulate_probe, output)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(str(self.bundle / "fqapp"), result.stderr)
+                self.assertIn("ELF closure", result.stderr)
+
+    def test_reports_library_without_dt_needed_as_statically_linked(self):
+        self.compile("static-probe", "void _start(void) {}", "-static", "-nostdlib")
+        result = self.check_bundle()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"lib/libapp\.so\n[^\n]*RUNPATH[^\n]*\n"
+                                        r"statically linked \(no DT_NEEDED\)")
+        self.assertIn("static-probe\nstatically linked (no DT_NEEDED)", result.stdout)
+
+    def test_accepts_absolute_path_loader_resolution(self):
+        self.compile("lib/libclosure_loader.so", "int probe(void) { return 0; }",
+                     "-shared", "-fPIC", "-nostdlib", "-Wl,--no-as-needed",
+                     "-l:ld-linux-x86-64.so.2")
+        (self.lib / "libclosure_loader.so").chmod(0o644)
+        result = self.check_bundle()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        section = result.stdout.split("lib/libclosure_loader.so\n", 1)[1].split("\n\n", 1)[0]
+        self.assertRegex(section, r"(?m)^\s*/[^\n]+/ld-linux-x86-64\.so\.2 \(0x")
 
 
 if __name__ == "__main__":

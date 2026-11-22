@@ -727,6 +727,7 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
             maximumRate: 4,
             title: book.title,
             episode: '系统朗读 · ${chapter.title}',
+            chapterId: chapter.itemId,
             coverUrl: book.coverUrl,
             playing: wantPlay && !loading && error == null,
             hasPrev: index > 0,

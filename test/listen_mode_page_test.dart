@@ -92,7 +92,7 @@ void main() {
     variant: TargetPlatformVariant.only(TargetPlatform.linux),
   );
 
-  testWidgets('Linux drops A seek acknowledgement after switching to B', (
+  testWidgets('Linux rejects seeks for stale same-title chapters', (
     tester,
   ) async {
     final calls = <MethodCall>[];
@@ -116,22 +116,34 @@ void main() {
       tester,
       created: created,
       createPlayer: ControlledNativePlayer.new,
+      episodes: [
+        Chapter(itemId: 'ep1', title: '同名章节', volumeName: ''),
+        Chapter(itemId: 'ep2', title: '同名章节', volumeName: ''),
+      ],
     );
     await tester.pumpAndSettle();
     final first = created.single as ControlledNativePlayer;
     first.seekGate = Completer<void>();
-    final metadata =
+    final firstMetadata =
         calls.lastWhere((c) => c.method == 'startListenForeground').arguments
             as Map;
-    await PlatformChannels.notify(
-      'fqapp/native_player',
-      'onNotificationAction',
-      {'owner': metadata['owner'], 'action': 'seekTo', 'positionMs': 5000},
-    );
+    Future<void> seek(String chapterId, int positionMs) =>
+        PlatformChannels.notify('fqapp/native_player', 'onNotificationAction', {
+          'owner': firstMetadata['owner'],
+          'chapterId': chapterId,
+          'episode': firstMetadata['episode'],
+          'action': 'seekTo',
+          'positionMs': positionMs,
+        });
+    await seek('ep1', 5000);
     await tester.pump();
+    expect(first.calls, contains('seek:5000ms'));
     await tester.tap(find.byIcon(LucideIcons.skip_forward));
     await tester.pumpAndSettle();
     expect(created, hasLength(2));
+    final secondMetadata =
+        calls.lastWhere((c) => c.method == 'startListenForeground').arguments
+            as Map;
     calls.clear();
     first.seekGate!.complete();
     await tester.pumpAndSettle();
@@ -143,6 +155,15 @@ void main() {
       ),
       isEmpty,
     );
+    final second = created.last;
+    await seek('ep1', 5000);
+    await seek('ep2', 7000);
+    await tester.pumpAndSettle();
+    expect(second.calls.where((call) => call.startsWith('seek:')), [
+      'seek:7000ms',
+    ]);
+    expect(firstMetadata['chapterId'], 'ep1');
+    expect(secondMetadata['chapterId'], 'ep2');
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();
     NativePlayer.clearRemoteCommandHandler();
@@ -477,6 +498,7 @@ Future<void> _pump(
   List<String>? resolved,
   int initialIndex = 0,
   FakeNativePlayer Function()? createPlayer,
+  List<Chapter>? episodes,
 }) async {
   popped = null;
   await tester.pumpWidget(
@@ -490,7 +512,7 @@ Future<void> _pump(
                   builder: (_) => ListenModePage(
                     seriesTitle: '测试剧',
                     coverUrl: 'https://cdn.example/cover.jpg',
-                    episodes: _episodes,
+                    episodes: episodes ?? _episodes,
                     initialIndex: initialIndex,
                     resolveSource: (episode) async {
                       resolved?.add(episode.itemId);
@@ -552,5 +574,6 @@ void _coverChannelTests() {
     // 封面之外，标题与集名也不能丢。
     expect(args['title'], '测试剧');
     expect(args['episode'], '第一集');
+    expect(args.containsKey('chapterId'), isFalse);
   });
 }

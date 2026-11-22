@@ -61,6 +61,7 @@ void main() {
         owner: current,
         title: 'synthetic',
         episode: 'one',
+        chapterId: 'chapter-one',
       );
       expect(calls.last.arguments, containsPair('transportV2', true));
       expect(calls.last.arguments, containsPair('seekSupported', true));
@@ -80,7 +81,12 @@ void main() {
       await PlatformChannels.notify(
         'fqapp/native_player',
         'onNotificationAction',
-        {'owner': current, 'action': 'seekTo', 'positionMs': 4200},
+        {
+          'owner': current,
+          'action': 'seekTo',
+          'chapterId': 'chapter-one',
+          'positionMs': 4200,
+        },
       );
       expect(actions, ['play', 'play', 'pause']);
       expect(seeks, [4200]);
@@ -89,6 +95,7 @@ void main() {
         owner: old,
         title: 'late',
         episode: 'old',
+        chapterId: 'chapter-old',
       );
       expect(calls.length, count);
       await NativePlayer.stopListenForeground(owner: current);

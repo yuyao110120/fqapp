@@ -141,10 +141,25 @@ Future<void> main() async {
             .toDouble();
       },
     );
+    const chapterA = 'fixture-item-a';
+    const chapterB = 'fixture-item-b';
+    Future<void> publishChapter(String chapterId, {int positionMs = 1000}) =>
+        NativePlayer.startListenForeground(
+          owner: owner,
+          title: 'Synthetic book',
+          episode: 'Chapter',
+          chapterId: chapterId,
+          positionMs: positionMs,
+          durationMs: 30000,
+          linuxTts: true,
+          minimumRate: .25,
+          maximumRate: 4,
+        );
     final metadata = {
       'owner': owner,
       'title': 'Synthetic book',
       'episode': 'Chapter',
+      'chapterId': chapterA,
       'playing': true,
       'positionMs': 1000,
       'durationMs': 30000,
@@ -167,16 +182,7 @@ Future<void> main() async {
     signal('release-name');
     await until(() => signalled('name-released'));
     await native.invokeMethod<void>('startListenForeground', metadata);
-    await NativePlayer.startListenForeground(
-      owner: owner,
-      title: 'Synthetic book',
-      episode: 'Chapter',
-      positionMs: 1000,
-      durationMs: 30000,
-      linuxTts: true,
-      minimumRate: .25,
-      maximumRate: 4,
-    );
+    await publishChapter(chapterA);
     signal('mpris');
     await until(() => signalled('controls-done'));
     check(
@@ -210,6 +216,14 @@ Future<void> main() async {
           seeks.length == 4,
       'capability gates dispatched an action',
     );
+    await publishChapter(chapterB);
+    signal('chapter-b');
+    await until(() => signalled('refresh-chapter-b'));
+    await publishChapter(chapterB, positionMs: 2000);
+    signal('chapter-b-refreshed');
+    await until(() => signalled('chapter-seeks-done') && seeks.length >= 5);
+    check(seeks.skip(4).join(',') == '7000', 'chapter seeks: $seeks');
+    stdout.writeln('PASS only current same-title chapter accepts SetPosition');
     await native.invokeMethod<void>('stopListenForeground', {'owner': 'stale'});
     signal('stale-stop');
     await until(() => signalled('stale-checked'));

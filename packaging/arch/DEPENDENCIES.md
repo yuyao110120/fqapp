@@ -8,7 +8,10 @@ profile rewrites, keyring changes or data deletion are included.
 - ELF: GTK3/GLib, Pango/Cairo/gdk-pixbuf/ATK, HarfBuzz, zlib, fontconfig,
   libsecret, epoxy/GL/EGL/X11 and glibc/libgcc/libstdc++. The native speech
   bridge directly links libspeechd.so.2 (`libspeechd`). `elf-report.txt` checks
-  every ELF's architecture, loader paths and ldd closure; missing libraries fail.
+  every ELF's architecture and loader paths. The runner's system glibc loader
+  checks the closure in place with `--list` and a clean loader environment.
+  Probe errors, missing libraries and output without dependency resolutions fail.
+  ELFs without `DT_NEEDED` are reported as statically linked.
 - dlopen: media_kit uses system libmpv, supplied by Arch **mpv**. Codecs,
   TLS and audio/display libraries follow the system package dependency closure.
 - CLI: locked path_provider_linux → xdg_directories invokes `xdg-user-dir`

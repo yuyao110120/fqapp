@@ -3,6 +3,7 @@ import 'package:flutter/gestures.dart';
 import '../services/desktop_platform.dart';
 import '../services/audio_floating_routes.dart';
 import '../widgets/desktop_chapter_sidebar.dart';
+import '../widgets/desktop_shell_scope.dart';
 
 import 'dart:async';
 import 'dart:collection';
@@ -416,6 +417,7 @@ class _ReaderPageState extends State<ReaderPage>
       _loading = false;
       _error = '暂无可阅读章节';
     } else {
+      if (isDesktopShell) _syncDesktopShell();
       if (_usesChapterDiskCache) {
         unawaited(_ensureCatalog().catchError((_) {}));
       }
@@ -454,23 +456,25 @@ class _ReaderPageState extends State<ReaderPage>
       _dismissReaderNotice();
     }
     final current = ModalRoute.isCurrentOf(context) ?? true;
-    if (_routeCurrent == current) return;
-    _routeCurrent = current;
-    if (!current) {
-      _cancelVideoOpen();
-      _dismissReaderNotice();
+    if (_routeCurrent != current) {
+      _routeCurrent = current;
+      if (!current) {
+        _cancelVideoOpen();
+        _dismissReaderNotice();
+      }
+      // The ideas sheet (#57) holds immersive while it is open. Once this
+      // route is current again the sheet is gone, so the hold is released
+      // here — the sheet's own finally runs before this notification lands
+      // (the sheet route is still present until its close animation ends),
+      // and releasing there would briefly show the status bar (one flash).
+      if (current) {
+        _ideasSheetOpen = false;
+        _readerPanelOpen = false;
+      }
+      _syncSystemBars();
+      _syncVolumeKeyEnabled();
     }
-    // The ideas sheet (#57) holds immersive while it is open. Once this
-    // route is current again the sheet is gone, so the hold is released
-    // here — the sheet's own finally runs before this notification lands
-    // (the sheet route is still present until its close animation ends),
-    // and releasing there would briefly show the status bar (one flash).
-    if (current) {
-      _ideasSheetOpen = false;
-      _readerPanelOpen = false;
-    }
-    _syncSystemBars();
-    _syncVolumeKeyEnabled();
+    _syncDesktopShell();
   }
 
   /// 迷你听书栏的「跳到播放位置」：按键不受任何闸门限制。
@@ -483,6 +487,9 @@ class _ReaderPageState extends State<ReaderPage>
 
   @override
   void dispose() {
+    if (isDesktopShell) {
+      DesktopShellState.clearReaderChrome(_desktopShellOwner);
+    }
     _bookmarkStore.changes.removeListener(_refreshPageBookmarks);
     _pageBookmarksGeneration++;
     _readerToastTimer?.cancel();

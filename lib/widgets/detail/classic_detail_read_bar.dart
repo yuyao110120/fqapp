@@ -14,9 +14,9 @@ import 'detail_style.dart';
 /// Layout: secondary actions (听书 / 下载) on the left and the primary read /
 /// play call to action as a filled pill on the right. Surface fill with a 1px
 /// top line, two 54dp icon+label items (20dp icon, 10dp muted label) and a
-/// 42dp accent pill. The bar is always mounted — while loading it renders
-/// disabled instead of disappearing, so the page never jumps when data
-/// arrives.
+/// 48dp-minimum accent pill; both grow with the text scale instead of clipping.
+/// The bar is always mounted — while loading it renders disabled instead of
+/// disappearing, so the page never jumps when data arrives.
 class ClassicDetailReadBar extends StatelessWidget {
   final String label;
   final bool opening;
@@ -113,10 +113,10 @@ class ClassicDetailReadBar extends StatelessWidget {
                             onTap: onRead,
                             borderRadius: BorderRadius.circular(999),
                             child: Container(
-                              height: 42,
-                              alignment: Alignment.center,
+                              constraints: const BoxConstraints(minHeight: 48),
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 12,
+                                vertical: 6,
                               ),
                               decoration: BoxDecoration(
                                 color: active
@@ -124,18 +124,22 @@ class ClassicDetailReadBar extends StatelessWidget {
                                     : palette.soft,
                                 borderRadius: BorderRadius.circular(999),
                               ),
-                              child: Text(
-                                opening ? '正在打开' : label,
-                                textAlign: TextAlign.center,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  color: active
-                                      ? detailOnAccent(palette)
-                                      : palette.muted,
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w500,
-                                  height: 1.35,
+                              child: Center(
+                                widthFactor: 1,
+                                heightFactor: 1,
+                                child: Text(
+                                  opening ? '正在打开' : label,
+                                  textAlign: TextAlign.center,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: active
+                                        ? detailOnAccent(palette)
+                                        : palette.muted,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w500,
+                                    height: 1.35,
+                                  ),
                                 ),
                               ),
                             ),
@@ -191,30 +195,34 @@ class _SecondaryAction extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
         child: SizedBox(
           width: 54,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (progress == null)
-                Icon(icon, size: 20, color: color)
-              else
-                SizedBox.square(
-                  dimension: 20,
-                  child: CircularProgressIndicator(
-                    value: progress.clamp(0.0, 1.0).toDouble(),
-                    strokeWidth: 2,
-                    color: color,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 48),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (progress == null)
+                  Icon(icon, size: 20, color: color)
+                else
+                  SizedBox.square(
+                    dimension: 20,
+                    child: CircularProgressIndicator(
+                      value: progress.clamp(0.0, 1.0).toDouble(),
+                      strokeWidth: 2,
+                      color: color,
+                    ),
                   ),
-                ),
-              if (!compact)
-                Text(
-                  label,
-                  style: TextStyle(
-                    color: palette.muted,
-                    fontSize: 10,
-                    height: 1.4,
+                if (!compact)
+                  Text(
+                    label,
+                    style: TextStyle(
+                      color: palette.muted,
+                      fontSize: 10,
+                      height: 1.4,
+                    ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

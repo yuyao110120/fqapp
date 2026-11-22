@@ -52,13 +52,21 @@ void main() {
   const ttsChannel = MethodChannel('fqapp/system_tts');
   const ttsEvents = MethodChannel('fqapp/system_tts_events');
   const playerChannel = MethodChannel('fqapp/native_player');
+  final apiPaths = <String>[];
+  var playableVideo = false;
   late List<MethodCall> nativeCalls;
   late Directory hiveDirectory;
 
   setUpAll(() {
     // `ApiClient.instance` must be built inside the mocked HTTP zone: its
     // rust-fallback transport captures the ambient `http.Client` when built.
-    http.runWithClient(() => ApiClient.instance, () => MockClient(_apiHandler));
+    http.runWithClient(
+      () => ApiClient.instance,
+      () => MockClient((request) {
+        apiPaths.add(request.url.path);
+        return _apiHandler(request, playableVideo: playableVideo);
+      }),
+    );
   });
 
   setUp(() async {
@@ -69,6 +77,8 @@ void main() {
     );
     AudioPreferences.instance.resetForTest();
     ListeningSession.instance.clear();
+    apiPaths.clear();
+    playableVideo = false;
     nativeCalls = [];
     messenger.setMockMethodCallHandler(ttsEvents, (_) async => null);
     messenger.setMockMethodCallHandler(playerChannel, (_) async => null);
@@ -1137,7 +1147,9 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('真实入口：听书走系统朗读，看剧走真实启动路径', (tester) async {
+  testWidgets('Linux 在线阅读菜单及设置预览不请求改编剧，仍可听书', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
     final store = AppThemeStyleStore();
     addTearDown(store.dispose);
     await store.select(AppThemeStyle.classic);
@@ -1146,11 +1158,25 @@ void main() {
       tester,
       store,
       audioScope: true,
-      preferences: const {'audio_listen_engine': 'system'},
+      preferences: const {
+        'audio_listen_engine': 'system',
+        'reader_show_video_button': true,
+      },
     );
     AudioPreferences.instance.listenEngine.value = ListenEngine.system;
     await tester.pumpAndSettle();
     await _openControls(tester);
+    expect(find.byType(ReaderVideoButton), findsNothing);
+
+    final settings = find.byKey(const ValueKey('reader-settings'));
+    await tester.tap(settings);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('reader-font-size-increase')));
+    await tester.pumpAndSettle();
+    expect(find.text('19'), findsOneWidget);
+    await tester.tap(find.byTooltip('关闭排版设置'));
+    await tester.pumpAndSettle();
+    expect(find.byType(ReaderVideoButton), findsNothing);
 
     // Tapping the keyed Padding would miss the 42dp circle it centres.
     final listen = find.byType(ReaderListenButton).hitTestable();
@@ -1165,28 +1191,80 @@ void main() {
       reason: '听书入口必须把真实 TTS 起播接上',
     );
     expect(ListeningSession.instance.playing, isTrue);
-
-    // 看剧入口需要视频平台；匹配数据来自 mock 的 /video-match。
-    // 先停掉朗读，否则新挂载的迷你胶囊会一直动，pumpAndSettle 等不到静止。
+    expect(apiPaths.where((path) => path.endsWith('/video-match')), isEmpty);
     ListeningSession.instance.clear();
     await tester.pumpWidget(const SizedBox.shrink());
-    await tester.pumpAndSettle();
-    debugDefaultTargetPlatformOverride = TargetPlatform.android;
-    addTearDown(() => debugDefaultTargetPlatformOverride = null);
-    await _mountReader(tester, store);
-    await _openControls(tester);
-    await tester.pumpAndSettle();
-    expect(find.byType(ReaderVideoButton), findsOneWidget);
-    await tester.tap(find.byType(ReaderVideoButton));
-    await tester.pumpAndSettle();
-
-    // 目录请求失败时留在阅读页并给出统一提示：证明走完了真实启动链路。
-    expect(find.byType(ReaderPage), findsOneWidget);
-    expect(find.text('改编剧暂时无法打开，请稍后重试'), findsOneWidget);
-
-    debugDefaultTargetPlatformOverride = null;
-    await tester.pumpWidget(const SizedBox.shrink());
   });
+
+  for (final canPlay in [false, true]) {
+    testWidgets('Android 在线阅读菜单匹配改编剧（目录可用：$canPlay）', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      playableVideo = canPlay;
+      final playerCalls = <String>[];
+      if (canPlay) {
+        messenger.setMockMethodCallHandler(
+          const MethodChannel('fqapp/native_player/events'),
+          (_) async => null,
+        );
+        addTearDown(
+          () => messenger.setMockMethodCallHandler(
+            const MethodChannel('fqapp/native_player/events'),
+            null,
+          ),
+        );
+        messenger.setMockMethodCallHandler(playerChannel, (call) async {
+          playerCalls.add(call.method);
+          if (call.method != 'create') return null;
+          await messenger.handlePlatformMessage(
+            'fqapp/native_player/events',
+            const StandardMethodCodec().encodeSuccessEnvelope({
+              'playerId': 71,
+              'type': 'created',
+              'value': 9,
+            }),
+            (_) {},
+          );
+          return {'playerId': 71};
+        });
+      }
+      final store = AppThemeStyleStore();
+      addTearDown(store.dispose);
+      await store.select(AppThemeStyle.classic);
+      await _mountReader(tester, store);
+      await _openControls(tester);
+      expect(
+        apiPaths,
+        contains('/api/v1/books/reader-classic-chrome/video-match'),
+      );
+      final video = find.byType(ReaderVideoButton);
+      expect(video, findsOneWidget);
+      await tester.tap(video);
+
+      if (canPlay) {
+        // Directory parsing and series detail use real isolates.
+        for (var i = 0; i < 100 && !playerCalls.contains('play'); i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 10)),
+          );
+          await tester.pump(const Duration(milliseconds: 20));
+        }
+        expect(apiPaths, contains('/api/v1/videos/ep1'));
+        expect(playerCalls, containsAllInOrder(['create', 'play']));
+      } else {
+        await tester.pumpAndSettle();
+        expect(find.byType(ReaderPage), findsOneWidget);
+        expect(find.text('改编剧暂时无法打开，请稍后重试'), findsOneWidget);
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+      if (canPlay) {
+        // Drain stream cancellations and the native player's retired-ID timer.
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 31));
+      }
+    });
+  }
 
   for (final size in [
     const Size(320, 560),
@@ -1246,13 +1324,13 @@ void main() {
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
-Future<http.Response> _apiHandler(http.Request request) async {
+Future<http.Response> _apiHandler(
+  http.Request request, {
+  required bool playableVideo,
+}) async {
   final path = request.url.path;
-  // The 看剧 entry stops before navigation: a directory error is surfaced as
-  // its real user-visible retry message. Answering with a payload would go on
-  // to `parseDirectoryAsync`, which uses a real isolate the fake async clock
-  // cannot drive.
-  if (path.endsWith('/directory') || path.contains('/detail')) {
+  if ((!playableVideo && path.endsWith('/directory')) ||
+      path.contains('/detail')) {
     return http.Response(
       jsonEncode({'code': 500, 'message': 'boom'}),
       200,
@@ -1260,7 +1338,15 @@ Future<http.Response> _apiHandler(http.Request request) async {
     );
   }
   Object data = const <String, Object>{};
-  if (path.endsWith('/video-match')) {
+  if (path == '/api/v1/books/9001/directory') {
+    data = const {
+      'episodes': [
+        {'video_id': 'ep1', 'title': '第 1 集'},
+      ],
+    };
+  } else if (path == '/api/v1/videos/ep1') {
+    data = const {'video_url': 'https://example.invalid/ep1.mp4'};
+  } else if (path.endsWith('/video-match')) {
     data = const {
       'match_video_id': '9001',
       'novel_match_max_item_id': 'c1',

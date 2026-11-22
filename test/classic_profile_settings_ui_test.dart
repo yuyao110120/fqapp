@@ -161,12 +161,15 @@ void main() {
       );
       expect(bar.height, 64);
       // 同心圆角：选中背景圆角 28 = 外轮廓 32 − 内缩间距 4；高亮是全局
-      // 唯一的浮动背景块，selectedIndex=2 时落在“书架”位置。
+      // 唯一的浮动背景块，selectedIndex=2 时落在“书架”位置。形状必须是
+      // 连续曲率 squircle（对齐 PiliPlus FloatingNavigationBar）。
       final selection = tester.widget<DecoratedBox>(
         find.byKey(const ValueKey('classic-dock-selection')),
       );
       expect(
-        (selection.decoration as BoxDecoration).borderRadius!
+        ((selection.decoration as ShapeDecoration).shape
+                as RoundedSuperellipseBorder)
+            .borderRadius
             .resolve(TextDirection.ltr)
             .topLeft
             .x,
@@ -270,6 +273,24 @@ void main() {
         expect(find.byType(ClassicMineHeatmap), findsOneWidget);
         expect(find.byType(ClassicMineTopBooks), findsOneWidget);
         expect(find.byType(ClassicMineEntries), findsOneWidget);
+        expect(find.byType(ClassicMinePrimaryTools), findsOneWidget);
+        expect(find.text('离线缓存'), findsOneWidget);
+        expect(find.text('备份与导入'), findsOneWidget);
+        expect(find.text('关于'), findsOneWidget);
+        expect(
+          tester
+              .widget<ClassicMineTopBooks>(find.byType(ClassicMineTopBooks))
+              .previewCount,
+          3,
+        );
+        expect(
+          tester.getTopLeft(find.byType(ClassicMinePrimaryTools)).dy,
+          lessThan(tester.getTopLeft(find.byType(ClassicMineHeatmap)).dy),
+        );
+        expect(
+          tester.getTopLeft(find.byType(ClassicMineEntries)).dy,
+          greaterThan(tester.getTopLeft(find.byType(ClassicMineTopBooks)).dy),
+        );
         expect(find.text('今日阅读'), findsOneWidget);
         expect(find.text('阅读热力图'), findsOneWidget);
         expect(find.text('读得最多'), findsOneWidget);

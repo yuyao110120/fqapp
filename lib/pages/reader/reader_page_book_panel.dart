@@ -112,6 +112,8 @@ extension _ReaderBookPanel on _ReaderPageState {
   Future<void> _openReaderAuthor(BookAuthor author) async {
     if (!mounted || !_canOpenReaderAuthor || author.id.trim().isEmpty) return;
     _setControlsVisible(false);
+    _readerPanelOpen = false;
+    _syncDesktopShell();
     await Navigator.push<void>(
       context,
       MaterialPageRoute(
@@ -124,6 +126,8 @@ extension _ReaderBookPanel on _ReaderPageState {
   Future<void> _openReaderDetails() async {
     if (!mounted || !_canOpenReaderDetails) return;
     _setControlsVisible(false);
+    _readerPanelOpen = false;
+    _syncDesktopShell();
     await Navigator.push<void>(
       context,
       MaterialPageRoute(

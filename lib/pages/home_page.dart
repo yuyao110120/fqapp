@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/home_cell.dart';
@@ -33,6 +34,8 @@ import '../widgets/home/home_reading_row.dart';
 import '../widgets/home/home_shelf.dart';
 import '../widgets/home/home_skeleton.dart';
 import '../widgets/home/home_tab_bar.dart';
+import '../widgets/home/ugc_story_feed.dart';
+import '../widgets/desktop_shell_scope.dart';
 import '../widgets/tab_swipe_area.dart';
 import 'cached_book_reader.dart';
 import 'category_page.dart';
@@ -284,6 +287,7 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   void _onScroll() {
     if (!mounted || !_visible) return;
+    if (_isUgcTab(ref.read(homeProvider).tabIndex)) return;
     if (!_scroll.hasClients) {
       final state = ref.read(homeProvider);
       if (state.error == null && _visibleItems(state).isEmpty) _maybeLoadMore();
@@ -297,6 +301,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   void _maybeLoadMore() {
     if (!mounted || !_visible || _loadMoreTimer != null) return;
     final state = ref.read(homeProvider);
+    if (_isUgcTab(state.tabIndex)) return;
     if (state.isLoading || state.isLoadMore || !state.hasMore) return;
     _loadMoreTimer = Timer(const Duration(milliseconds: 500), () {
       _loadMoreTimer = null;
@@ -330,6 +335,9 @@ class _HomePageState extends ConsumerState<HomePage> {
   String _kindOf(HomeState state) =>
       ref.read(homeProvider.notifier).identityOf(state.tabIndex).kind;
 
+  bool _isUgcTab(int tabIndex) =>
+      ref.read(homeProvider.notifier).identityOf(tabIndex).kind == 'ugc';
+
   List<MediaItem> _visibleItems(HomeState state) {
     final kind = _kindOf(state);
     return [
@@ -352,7 +360,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     return owner == state.tabIndex ? cells : const [];
   }
 
-  /// 顶栏分类：固定用本地六分类（推荐/小说/短剧/漫剧/漫画/听书）。
+  /// 顶栏分类：固定用本地七分类（推荐/小说/短剧/漫剧/漫画/听书/短篇）。
   ///
   /// 2026-10-24 用户决定回退服务端 11 项方案——服务端表没有「短剧/漫剧」，
   /// 跨媒介入口只能本地给；点击身份由 `homeProvider` 的 `usesLocalTabs`
@@ -388,26 +396,84 @@ class _HomePageState extends ConsumerState<HomePage> {
             bottom: false,
             child: Column(
               children: [
-                if (AppStyleTokens.of(context).isClassic)
-                  HomeHero(
-                    onSearch: _openSearch,
-                    onCategory: _openCategory,
-                    cueLoader: widget.cueLoader,
+                if (isDesktopShell && DesktopShellScope.hasFrameOf(context))
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: palette.canvas,
+                      border: Border(bottom: BorderSide(color: palette.line)),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.only(right: homeGutter),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: ValueListenableBuilder<double>(
+                              valueListenable: _tabProgress,
+                              builder: (context, progress, _) => HomeTabBar(
+                                selectedIndex: state.tabIndex,
+                                onSelect: _selectTab,
+                                categories: categories,
+                                progress: progress,
+                                showBottomBorder: false,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          OutlinedButton.icon(
+                            key: const Key('home_category_button'),
+                            onPressed: _openCategory,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: palette.ink,
+                              backgroundColor: palette.surface,
+                              side: BorderSide(color: palette.line),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                              ),
+                              minimumSize: const Size(0, 32),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            icon: Icon(
+                              LucideIcons.layout_grid,
+                              size: 15,
+                              color: palette.ink,
+                            ),
+                            label: const Text(
+                              '分类',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   )
-                else
-                  HomeMasthead(
-                    onSearch: _openSearch,
-                    onCategory: _openCategory,
+                else ...[
+                  if (AppStyleTokens.of(context).isClassic)
+                    HomeHero(
+                      onSearch: _openSearch,
+                      onCategory: _openCategory,
+                      cueLoader: widget.cueLoader,
+                    )
+                  else
+                    HomeMasthead(
+                      onSearch: _openSearch,
+                      onCategory: _openCategory,
+                    ),
+                  ValueListenableBuilder<double>(
+                    valueListenable: _tabProgress,
+                    builder: (context, progress, _) => HomeTabBar(
+                      selectedIndex: state.tabIndex,
+                      onSelect: _selectTab,
+                      categories: categories,
+                      progress: progress,
+                    ),
                   ),
-                ValueListenableBuilder<double>(
-                  valueListenable: _tabProgress,
-                  builder: (context, progress, _) => HomeTabBar(
-                    selectedIndex: state.tabIndex,
-                    onSelect: _selectTab,
-                    categories: categories,
-                    progress: progress,
-                  ),
-                ),
+                ],
                 Expanded(
                   // Headers stay outside both the horizontal transform and
                   // the vertical viewport, including loading/error states.
@@ -482,6 +548,18 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   Widget _buildTabPage(int target, double gridWidth, double textScale) {
     final palette = HomePalette.of(context);
+    final kind = ref.read(homeProvider.notifier).identityOf(target).kind;
+    if (kind == 'ugc') {
+      return ValueListenableBuilder<int?>(
+        valueListenable: shellVisibleTab,
+        builder: (context, shellTab, _) => UgcStoryFeed(
+          scrollController: _scrollFor(target),
+          active:
+              (shellTab == null || shellTab == widget.shellIndex) &&
+              ref.read(homeProvider).tabIndex == target,
+        ),
+      );
+    }
     final saved = _tabStates[target];
     // 只记每个分类「第一次被建出来」的时刻：和 stall 行对齐就能看出
     // 那一下停顿是不是花在建页上。

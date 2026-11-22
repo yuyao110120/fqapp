@@ -138,6 +138,8 @@ extension _DetailPageClassic on _DetailPageState {
                     detail: _bookDetail,
                     onOpenAuthor: _openAuthorAction,
                     lastChapterTitle: _latestChapterTitle,
+                    // 标签整宽下移只针对窄屏手机;≥600dp 的经典平板版式保持原样。
+                    tagsBelowCover: MediaQuery.sizeOf(context).width < 600,
                   ),
                 ),
               ),
@@ -225,20 +227,21 @@ extension _DetailPageClassic on _DetailPageState {
     );
   }
 
-  /// `完结 共820章 · 全部 ›` — the old preview heading. A single-episode
-  /// fallback catalogue must not present its length as the episode count.
-  String get _classicDirectoryTrailing {
+  /// `完结 共820章` — the classic preview's own metadata line under the 目录
+  /// heading; the catalogue entry is separate. A single-episode fallback
+  /// catalogue must not present its length as the episode count.
+  String get _classicDirectoryStatus {
     if (_allChapters.isEmpty) return '';
     if (_isVideo && !hasCompleteEpisodeCatalogue(_allChapters)) {
       return '完整目录暂不可用';
     }
     final status = _bookDetail?.statusLabel ?? '';
     final count = '共${_allChapters.length}$_chapterUnit';
-    return '${status.isEmpty ? '' : '$status '}$count · 全部';
+    return '${status.isEmpty ? '' : '$status '}$count';
   }
 
   /// The old 目录 preview: the reader's own slice (current ±1, or the first
-  /// three) in catalogue order, with `全部 ›` opening the searchable sheet.
+  /// three) in catalogue order, with an entry opening the searchable sheet.
   ///
   /// Catalogue order is deliberately not shared here: 档案's inline catalogue
   /// reads/writes `CatalogueOrderPreferences`, while this preview always keeps
@@ -248,7 +251,8 @@ extension _DetailPageClassic on _DetailPageState {
     // 全局集号未知时，「已读 N%」的 N 没有意义，不展示进度行。
     final complete = !_isVideo || hasCompleteEpisodeCatalogue(_allChapters);
     return ClassicDetailDirectorySection(
-      trailing: _classicDirectoryTrailing,
+      statusLabel: _classicDirectoryStatus,
+      catalogueComplete: complete,
       preview: _previewChapters(),
       currentIndex: _previewCurrentIndex(),
       resumeIndex: complete ? _resumeIndex : null,

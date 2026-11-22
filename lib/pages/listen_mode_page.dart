@@ -342,6 +342,7 @@ class _ListenModePageState extends State<ListenModePage>
       maximumRate: 2,
       title: widget.seriesTitle,
       episode: _episodeTitle(_index),
+      chapterId: widget.episodes[_index].itemId,
       // 通知左上角与系统媒体卡片显示的就是这张封面（对齐官方）。
       coverUrl: widget.coverUrl,
       playing: isLinuxDesktop

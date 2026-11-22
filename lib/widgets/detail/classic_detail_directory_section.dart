@@ -11,15 +11,20 @@ import 'detail_style.dart';
 /// Classic `目录` preview of the pre-#291 detail page
 /// (fqapp-backup@f329399 `widgets/detail/detail_directory_section.dart`).
 ///
-/// Heading with the one chapter-count line, the reader's progress line and bar,
-/// then a preview of the current chapter ±1 (first three when there is no
-/// progress). `全部 ›` opens the same searchable sheet as the 档案 catalogue.
+/// Heading with its own catalogue entry, the creation-status / chapter-count
+/// metadata line under it, the reader's progress line and bar, then a preview
+/// of the current chapter ±1 (first three when there is no progress). The entry
+/// opens the same searchable sheet as the 档案 catalogue.
 ///
 /// The preview is a display slice only: rows carry the `Chapter` the page
 /// picked from its own catalogue, so tapping one runs the same
 /// `_openChapter`. It shows no ordinals, chevrons or opening excerpts.
 class ClassicDetailDirectorySection extends StatelessWidget {
-  final String trailing;
+  /// `完结 共820章` — the only place the catalogue count appears; empty when the
+  /// catalogue itself is missing.
+  final String statusLabel;
+
+  final bool catalogueComplete;
 
   /// The visible slice: current ±1, or chapters 1–3 without progress.
   final List<Chapter> preview;
@@ -43,7 +48,8 @@ class ClassicDetailDirectorySection extends StatelessWidget {
 
   const ClassicDetailDirectorySection({
     super.key,
-    required this.trailing,
+    required this.statusLabel,
+    required this.catalogueComplete,
     required this.preview,
     required this.currentIndex,
     this.resumeIndex,
@@ -55,20 +61,48 @@ class ClassicDetailDirectorySection extends StatelessWidget {
     this.error,
   });
 
-  /// `完结 共820章 · 全部 ›` — the only place the chapter count appears.
-  Widget? _action(HomePalette palette) {
-    if (trailing.isEmpty) return null;
+  /// The distinct catalogue entry: its own 48dp target, never squeezed by the
+  /// status/count line. Mounted in every state, disabled when there is nothing
+  /// to open.
+  Widget _action(HomePalette palette) {
+    final enabled = preview.isNotEmpty;
+    final labelText = catalogueComplete ? '全部目录' : '查看现有章节';
+    final semanticLabel = catalogueComplete ? '查看全部章节' : labelText;
+    final label = ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 48),
+      child: Align(
+        widthFactor: 1,
+        alignment: Alignment.topLeft,
+        child: Padding(
+          padding: const EdgeInsets.only(left: 8, right: 8, top: 2),
+          child: Text(
+            '$labelText ›',
+            style: TextStyle(
+              color: enabled
+                  ? palette.muted
+                  : palette.muted.withValues(alpha: 0.5),
+              fontSize: 12,
+              height: 1.5,
+            ),
+          ),
+        ),
+      ),
+    );
+    if (!enabled) {
+      return Semantics(
+        key: const Key('detail_directory_button'),
+        label: semanticLabel,
+        button: true,
+        enabled: false,
+        child: ExcludeSemantics(child: label),
+      );
+    }
     return HomePressable(
       key: const Key('detail_directory_button'),
-      semanticLabel: '查看全部章节',
+      semanticLabel: semanticLabel,
       onTap: onOpenAll,
-      borderRadius: BorderRadius.circular(4),
-      child: Text(
-        '$trailing ›',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(color: palette.muted, fontSize: 12, height: 1.5),
-      ),
+      borderRadius: BorderRadius.circular(8),
+      child: label,
     );
   }
 
@@ -94,6 +128,29 @@ class ClassicDetailDirectorySection extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette = HomePalette.of(context);
     final progress = _progress();
+    final action = _action(palette);
+    final heading = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '目录',
+          style: TextStyle(
+            fontSize: 15,
+            height: 1.5,
+            fontWeight: FontWeight.w700,
+            color: palette.ink,
+          ),
+        ),
+        if (statusLabel.isNotEmpty) ...[
+          const SizedBox(height: 2),
+          Text(
+            statusLabel,
+            style: TextStyle(color: palette.muted, fontSize: 12, height: 1.5),
+          ),
+        ],
+      ],
+    );
+    final stackedHeader = MediaQuery.textScalerOf(context).scale(15) > 30;
     final rows = error != null
         ? DetailInlineError(message: error!, onRetry: onRetry)
         : preview.isEmpty
@@ -125,10 +182,32 @@ class ClassicDetailDirectorySection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        DetailSectionHeader(
-          title: '目录',
-          action: _action(palette),
-          bottomGap: progress == null ? 10 : 8,
+        // Title pinned to the row top: the 48dp action makes the row taller
+        // than the heading, and the classic/archive anchor measures the
+        // section's leading edge, so the text keeps its homeSectionGap lead-in.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            homeGutter,
+            homeSectionGap,
+            homeGutter,
+            0,
+          ),
+          child: stackedHeader
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    heading,
+                    Align(alignment: Alignment.centerRight, child: action),
+                  ],
+                )
+              : Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: heading),
+                    const SizedBox(width: 12),
+                    action,
+                  ],
+                ),
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: homeGutter),

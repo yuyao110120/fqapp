@@ -26,11 +26,15 @@ class ReadingNow {
 
   final double progress;
 
+  /// The fallback detail already contains the percentage when no chapter is saved.
+  final bool detailIsProgress;
+
   const ReadingNow({
     required this.item,
     required this.verb,
     required this.detail,
     required this.progress,
+    this.detailIsProgress = false,
   });
 
   factory ReadingNow.fromHistory(Map<String, dynamic> entry) {
@@ -58,12 +62,14 @@ class ReadingNow {
         badge: '',
         ep: entry['ep']?.toString() ?? '',
         kind: entry['kind']?.toString() ?? 'book',
+        source: historySource(entry),
         seriesId: entry['seriesId']?.toString(),
         episodeId: entry['episodeId']?.toString(),
       ),
       verb: audio ? '继续收听' : '继续阅读',
       detail: detail,
       progress: value,
+      detailIsProgress: chapter.isEmpty && value > 0,
     );
   }
 }

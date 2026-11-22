@@ -14,7 +14,7 @@ case "$output/" in "$root/"*|/) echo 'Output must be outside checkout' >&2; exit
 [[ ! -e $output && ! -L $output ]]
 : "${FLUTTER_ROOT:?Set FLUTTER_ROOT to official Flutter 3.50.0}"
 : "${PUB_CACHE:?Set PUB_CACHE to prepared locked dependencies}"
-for tool in makepkg patchelf python tar zstd readelf ldd desktop-file-validate; do command -v "$tool" >/dev/null; done
+for tool in makepkg patchelf python tar zstd readelf desktop-file-validate; do command -v "$tool" >/dev/null; done
 # Atomic reservation refuses existing output, including broken symlinks.
 mkdir -m755 -- "$output"
 export HOME="$output/home" XDG_CONFIG_HOME="$output/home/config" XDG_DATA_HOME="$output/home/data" XDG_CACHE_HOME="$output/home/cache"

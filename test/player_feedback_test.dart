@@ -9,6 +9,7 @@ import 'package:fqapp/models/media_item.dart';
 import 'package:fqapp/pages/player_page.dart';
 import 'package:fqapp/services/api_client.dart';
 import 'package:fqapp/services/native_player.dart';
+import 'package:fqapp/services/playback_issue.dart';
 import 'package:fqapp/widgets/player/player_feedback.dart';
 import 'package:fqapp/widgets/video_player_chrome.dart';
 
@@ -59,6 +60,17 @@ void main() {
       (tester) async {
         final session = _Session(loader: (_) => Future.error(error));
         await _mount(tester, session);
+        if (error is ApiException && (error.statusCode ?? 0) >= 500) {
+          // Service errors stay in the loading state during bounded backoff.
+          // Only exhaust the two retries before checking the final message.
+          expect(find.text(title), findsNothing);
+          expect(session.requests, ['1']);
+          await tester.pump(const Duration(milliseconds: 500));
+          await _flush(tester);
+          expect(session.requests, ['1', '1']);
+          await tester.pump(const Duration(milliseconds: 1500));
+          await _flush(tester);
+        }
         expect(find.text(title), findsOneWidget);
         expect(find.textContaining('private-token'), findsNothing);
         expect(find.textContaining(error.runtimeType.toString()), findsNothing);
@@ -71,6 +83,28 @@ void main() {
       },
     );
   }
+
+  testWidgets('codec rejection explains itself at once and is not retried', (
+    tester,
+  ) async {
+    // Rust 编码门的 500：上游只给了 bytevc2，重试只会拿到同一种编码。
+    final session = _Session(
+      loader: (_) => Future.error(
+        const ApiException(
+          PlaybackIssue.unsupportedCodecError,
+          statusCode: 500,
+        ),
+      ),
+    );
+    await _mount(tester, session);
+    expect(find.text(PlaybackIssue.unsupportedCodec.title), findsOneWidget);
+    expect(find.textContaining('bytevc2'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.widgetWithText(OutlinedButton, '重试'), findsNothing);
+    await tester.pump(const Duration(seconds: 30));
+    expect(session.requests, ['1']);
+    expect(session.players, isEmpty);
+  });
 
   for (final scenario in [
     (code: 2001, status: null, title: '网络连接异常'),

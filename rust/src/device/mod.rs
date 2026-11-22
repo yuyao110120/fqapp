@@ -405,6 +405,26 @@ impl DevicePool {
         }))
     }
 
+    /// Picks a pooled identity other than [device_id] without registering.
+    ///
+    /// Playback rotation uses this to spend an already-registered standby
+    /// identity before paying for a fresh registration. A pool that only holds
+    /// the failing device returns an error so the caller can decide whether a
+    /// registration round trip still fits its deadline. Usage counters are
+    /// deliberately left alone: a standby handed out here is not evidence the
+    /// identity was spent.
+    pub async fn get_excluding(&self, device_id: &str) -> Result<Device, String> {
+        let picked = {
+            let mut s = self.state.lock().await;
+            s.devices.sort_by(|a, b| a.last_used.cmp(&b.last_used));
+            s.devices
+                .iter()
+                .find(|device| device.device_id != device_id && !device.secret_key.is_empty())
+                .cloned()
+        };
+        picked.ok_or_else(|| format!("no alternate device besides {device_id}"))
+    }
+
     /// Least-recently-used device, refilling the pool when needed.
     ///
     /// Only an empty pool waits for a registration. A pool that still has a
@@ -613,6 +633,36 @@ impl DevicePool {
             }
         }
         Err(format!("replace device {device_id}: exhausted retries"))
+    }
+
+    /// Removes a device that upstream silently rejected and tops the pool up in
+    /// the background. Unlike `replace_failed`, this does not wait for a new
+    /// registration, so a request that already has another usable stream can
+    /// finish without paying another device-registration round trip.
+    pub async fn quarantine(self: &Arc<Self>, device_id: &str) -> bool {
+        let removed = {
+            let mut state = self.state.lock().await;
+            match state
+                .devices
+                .iter()
+                .position(|device| device.device_id == device_id)
+            {
+                Some(index) => {
+                    state.devices.remove(index);
+                    state.dirty = true;
+                    true
+                }
+                None => false,
+            }
+        };
+        if !removed {
+            return false;
+        }
+        if let Err(error) = self.save().await {
+            log::warn!("quarantine device: failed to persist pool: {error}");
+        }
+        self.schedule_refill();
+        true
     }
 
     /// Retires the pool: from the moment this returns, no commit belonging to

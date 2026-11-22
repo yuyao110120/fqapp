@@ -24,7 +24,9 @@ import '../services/audio_playback_choice.dart';
 import '../services/audio_subtitle_synth.dart';
 import '../services/audio_time_point_lookup.dart';
 import '../services/audio_preferences.dart';
+import '../services/backend_transport.dart';
 import '../services/book_updates.dart';
+import '../services/boss_key_service.dart';
 import '../services/chapter_cache_store.dart';
 import '../services/chapter_text_formatter.dart';
 import '../services/fair_memory.dart';
@@ -801,55 +803,70 @@ class _AudioPageState extends State<AudioPage> {
               ),
               SizedBox(
                 width: MediaQuery.sizeOf(context).width >= 1200 ? 360 : 280,
-                child: DefaultTabController(
-                  length: 2,
-                  child: Column(
-                    children: [
-                      const TabBar(
-                        tabs: [
-                          Tab(text: '章节目录'),
-                          Tab(text: '同步字幕'),
-                        ],
-                      ),
-                      Expanded(
-                        child: TabBarView(
-                          children: [
-                            DesktopChapterSidebar(
-                              chapters: c._chapters,
-                              currentIndex: c._index,
-                              onSelected: (index) =>
-                                  unawaited(c._openChapter(index)),
-                            ),
-                            ValueListenableBuilder<Duration>(
-                              valueListenable: c._position,
-                              builder: (context, position, _) {
-                                final track = c._subtitles;
-                                if (track.isEmpty) {
-                                  // 官方两种空态都走 `setStatusText`，文案统一。
-                                  return const Center(
-                                    child: Text(
-                                      '本章暂无同步字幕',
-                                      key: Key('audio-subtitle-page-empty'),
-                                    ),
-                                  );
-                                }
-                                // 高亮与自动滚动都在 `AudioSubtitleList`
-                                // 里：跟着朗读进度滚到当前句并标出它。
-                                return AudioSubtitleList(
-                                  track: track,
-                                  active: track.indexAt(position),
-                                  onSeek: c._ready
-                                      ? (startMs) => c._seekTo(
-                                          Duration(milliseconds: startMs),
-                                        )
-                                      : null,
-                                );
-                              },
-                            ),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: palette.surface,
+                    border: Border(left: BorderSide(color: palette.line)),
+                  ),
+                  child: DefaultTabController(
+                    length: 2,
+                    child: Column(
+                      children: [
+                        TabBar(
+                          labelColor: palette.ink,
+                          unselectedLabelColor: palette.muted,
+                          indicatorColor: palette.eink
+                              ? palette.ink
+                              : HomePalette.accent,
+                          dividerColor: palette.line,
+                          tabs: const [
+                            Tab(text: '章节目录'),
+                            Tab(text: '同步字幕'),
                           ],
                         ),
-                      ),
-                    ],
+                        Expanded(
+                          child: TabBarView(
+                            children: [
+                              DesktopChapterSidebar(
+                                width: double.infinity,
+                                showBorder: false,
+                                backgroundColor: palette.surface,
+                                chapters: c._chapters,
+                                currentIndex: c._index,
+                                onSelected: (index) =>
+                                    unawaited(c._openChapter(index)),
+                              ),
+                              ValueListenableBuilder<Duration>(
+                                valueListenable: c._position,
+                                builder: (context, position, _) {
+                                  final track = c._subtitles;
+                                  if (track.isEmpty) {
+                                    // 官方两种空态都走 `setStatusText`，文案统一。
+                                    return const Center(
+                                      child: Text(
+                                        '本章暂无同步字幕',
+                                        key: Key('audio-subtitle-page-empty'),
+                                      ),
+                                    );
+                                  }
+                                  // 高亮与自动滚动都在 `AudioSubtitleList`
+                                  // 里：跟着朗读进度滚到当前句并标出它。
+                                  return AudioSubtitleList(
+                                    track: track,
+                                    active: track.indexAt(position),
+                                    onSeek: c._ready
+                                        ? (startMs) => c._seekTo(
+                                            Duration(milliseconds: startMs),
+                                          )
+                                        : null,
+                                  );
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
