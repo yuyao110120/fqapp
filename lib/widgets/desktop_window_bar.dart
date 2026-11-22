@@ -158,26 +158,30 @@ class _DesktopWindowBarState extends State<DesktopWindowBar> {
                 ),
               ],
               const SizedBox(width: 8),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(5),
-                child: Image.asset(
-                  'assets/images/app_logo.webp',
-                  width: 20,
-                  height: 20,
-                  fit: BoxFit.cover,
+              // Windows draws its own caption, so the app mark and name live in
+              // this bar. macOS keeps the native title bar for both.
+              if (!isMacOSDesktop) ...[
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(5),
+                  child: Image.asset(
+                    'assets/images/app_logo.webp',
+                    width: 20,
+                    height: 20,
+                    fit: BoxFit.cover,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                '什锦铺',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontWeight: FontWeight.w700,
-                  fontSize: 13.5,
-                  color: palette.ink,
+                const SizedBox(width: 8),
+                Text(
+                  '什锦铺',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13.5,
+                    color: palette.ink,
+                  ),
                 ),
-              ),
+              ],
               const SizedBox(width: 16),
               Expanded(
                 child: GestureDetector(
@@ -277,11 +281,14 @@ class _DesktopWindowBarState extends State<DesktopWindowBar> {
               ),
               const SizedBox(width: 12),
             ],
-            _WindowCaptionButtons(
-              ink: inkColor,
-              hoverColor: hoverColor,
-              eink: eink,
-            ),
+            // macOS keeps the AppKit traffic lights; only the Windows shell
+            // needs its own caption buttons.
+            if (!isMacOSDesktop)
+              _WindowCaptionButtons(
+                ink: inkColor,
+                hoverColor: hoverColor,
+                eink: eink,
+              ),
           ],
         ),
       ),

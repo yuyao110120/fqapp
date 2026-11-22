@@ -147,7 +147,12 @@ class DesktopPlatform with WindowListener {
         ),
         center: true,
         title: '什锦铺',
-        titleBarStyle: TitleBarStyle.hidden,
+        // macOS keeps its own title bar: the traffic lights, window dragging and
+        // double-click-to-zoom all come from AppKit. The Windows shell hides the
+        // caption and draws its own Fluent bar instead.
+        titleBarStyle: isMacOSDesktop
+            ? TitleBarStyle.normal
+            : TitleBarStyle.hidden,
       ),
       () async {
         await windowManager.show();
