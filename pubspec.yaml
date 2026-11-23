@@ -59,12 +59,13 @@ dependencies:
   flutter_svg: ^2.3.0
   media_kit: 1.2.6
   media_kit_video: 2.0.1
-  # Windows 专用 libmpv；不要把 umbrella 的 media_kit_libs_video 加回来，否则
-  # Android/iOS/macOS/Linux 的播放库会一起进包（APK 多出 ~11 MB）。
+  # 按平台显式声明 libmpv；umbrella 包会额外带入 Android 播放库（APK 多出 ~11 MB）。
   media_kit_libs_windows_video: 1.0.11
   media_kit_libs_linux: 1.2.1
-  # macOS 端口：media_kit 的 libmpv 预编译包（Windows/Linux 各有对应包）。
+  # macOS/iOS 端口：media_kit 的 libmpv 预编译包（Windows/Linux 各有对应包）。
   media_kit_libs_macos_video: ^1.1.4
+  media_kit_libs_ios_video: 1.1.4
+  wakelock_plus: ^1.5.2
   file_selector: ^1.1.0
   flutter_tts: ^4.2.5
   # macOS 官方网页登录用 WKWebView（Windows 侧仍是 webview_windows）。

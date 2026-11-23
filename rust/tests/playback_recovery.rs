@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::sync::{Mutex, MutexGuard};
 
 const V5_PATH: &str = "/novel/player/multi_video_model/player/v1";
+const MODEL_PATH: &str = "/novel/player/video_model/v1/";
 const TAB_PATH: &str = "/reading/bookapi/video_tab/multi_video_model/v1/";
 const VIDEO_ID: &str = "7312345678901234567";
 
@@ -69,8 +70,41 @@ fn is_v5(request: &common::Recorded) -> bool {
     request.path == V5_PATH
 }
 
+fn is_model(request: &common::Recorded) -> bool {
+    request.path == MODEL_PATH
+}
+
 fn is_tab(request: &common::Recorded) -> bool {
     request.path == TAB_PATH
+}
+
+/// A codec-only model in the v5 grouped shape.
+fn v5_codec_body(codec: &str) -> Value {
+    let entry = json!({ "video_model": {
+        "key_seed": "AAAA",
+        "video_list": {"video_0": {
+            "main_url": format!("https://example.invalid/{codec}-1080.mp4"),
+            "codec_type": codec,
+            "vwidth": 1080,
+            "vheight": 1920,
+        }}
+    }});
+    let mut group = serde_json::Map::new();
+    group.insert(VIDEO_ID.to_string(), entry);
+    json!({"code": 0, "data": {"1004": Value::Object(group)}})
+}
+
+/// A codec-only model in the official single-episode shape (`data.video_model`).
+fn model_codec_body(codec: &str) -> Value {
+    json!({"code": 0, "data": {"video_model": {
+        "key_seed": "AAAA",
+        "video_list": {"video_0": {
+            "main_url": format!("https://example.invalid/{codec}-1080.mp4"),
+            "codec_type": codec,
+            "vwidth": 1080,
+            "vheight": 1920,
+        }}
+    }}})
 }
 
 fn device_of(request: &common::Recorded) -> String {
@@ -114,13 +148,13 @@ async fn server_with(upstream: &MockUpstream, tag: &str) -> (TempDir, Arc<Server
 }
 
 #[tokio::test]
-async fn an_empty_v5_body_falls_back_to_the_signed_video_tab_door_on_the_same_identity() {
+async fn empty_player_doors_fall_back_to_the_signed_video_tab_door_on_the_same_identity() {
     let _guard = exclusive();
     let upstream = MockUpstream::start(|request| {
-        if is_v5(request) {
-            MockReply::status(200)
-        } else {
+        if is_tab(request) {
             MockReply::json(tab_body())
+        } else {
+            MockReply::status(200)
         }
     })
     .await;
@@ -138,37 +172,39 @@ async fn an_empty_v5_body_falls_back_to_the_signed_video_tab_door_on_the_same_id
     let requests = upstream.requests();
     assert_eq!(
         requests.len(),
-        3,
-        "v5, its single re-probe, then one video_tab door"
+        5,
+        "v5, its single re-probe, model-a, model-c, then one video_tab door"
     );
     assert!(is_v5(&requests[0]) && requests[0].method == "POST");
     assert!(
         is_v5(&requests[1]) && requests[1].method == "POST",
         "the re-probe stays on the v5 door"
     );
-    assert!(is_tab(&requests[2]) && requests[2].method == "GET");
-    assert_eq!(
-        device_of(&requests[0]),
-        device_of(&requests[1]),
-        "the re-probe must reuse the identity that just answered"
+    assert!(
+        is_model(&requests[2]) && requests[2].method == "POST",
+        "the single-episode door is the second chance"
     );
-    assert_eq!(
-        device_of(&requests[0]),
-        device_of(&requests[2]),
-        "the fallback door must be asked under the same identity"
-    );
+    assert!(is_model(&requests[3]) && requests[3].method == "POST");
+    assert!(is_tab(&requests[4]) && requests[4].method == "GET");
+    for request in requests.iter().skip(1) {
+        assert_eq!(
+            device_of(&requests[0]),
+            device_of(request),
+            "every later door must be asked under the same identity"
+        );
+    }
     for header in ["x-medusa", "x-helios", "x-khronos"] {
         assert!(
-            requests[2].header(header).is_some(),
+            requests[4].header(header).is_some(),
             "the fallback door must carry the player signature header {header}"
         );
     }
     assert!(
-        requests[2].header("x-ss-stub").is_none(),
+        requests[4].header("x-ss-stub").is_none(),
         "a body-less GET must not claim a body digest"
     );
 
-    let query = query_map(&requests[2].query);
+    let query = query_map(&requests[4].query);
     for (key, expected) in [
         ("video_id", VIDEO_ID),
         ("video_id_type", "0"),
@@ -280,13 +316,14 @@ async fn every_video_tab_payload_shape_reaches_the_shared_parser() {
 }
 
 #[tokio::test]
-async fn a_rejected_video_tab_model_is_not_treated_as_a_playable_answer() {
+async fn a_rejected_video_tab_body_is_not_treated_as_a_playable_answer() {
     let _guard = exclusive();
     let upstream = MockUpstream::start(|request| {
-        if is_v5(request) {
-            MockReply::status(200)
-        } else {
+        if is_tab(request) {
+            // A business rejection: the door answered, but not with a model.
             MockReply::json(json!({"code": 100103, "data": {}}))
+        } else {
+            MockReply::status(200)
         }
     })
     .await;
@@ -334,7 +371,7 @@ async fn every_door_empty_rotates_the_identity_once_and_stays_bounded() {
     assert!(
         requests
             .iter()
-            .all(|request| is_v5(request) || is_tab(request)),
+            .all(|request| is_v5(request) || is_model(request) || is_tab(request)),
         "no other upstream path may be touched"
     );
     upstream.shutdown();
@@ -381,9 +418,9 @@ async fn a_second_all_empty_request_cannot_rotate_again_inside_the_cooldown() {
     assert_eq!(status, 500);
     let second = upstream.requests().len() - after_first;
     assert_eq!(
-        second, 1,
-        "every door is parked, so one probe is the whole request; a second \
-         rotation would add another round"
+        second, 4,
+        "every door is parked, so one probe per door is the whole request; a \
+         second rotation would add another round"
     );
     upstream.shutdown();
 }
@@ -406,7 +443,7 @@ async fn a_parked_empty_door_is_skipped_by_the_next_foreground_request() {
     let (status, body) = episode(&server, "").await;
     assert_eq!(status, 200, "{body}");
     let first = upstream.requests().len();
-    assert_eq!(first, 3, "v5 empty, its re-probe, then the video_tab door");
+    assert_eq!(first, 3, "v5 empty, its re-probe, then the model door");
 
     // Second request: the parked v5 door must not be retried before its cooldown.
     let (status, body) = episode(&server, "").await;
@@ -414,8 +451,302 @@ async fn a_parked_empty_door_is_skipped_by_the_next_foreground_request() {
     let second: Vec<_> = upstream.requests().into_iter().skip(first).collect();
     assert!(!second.is_empty());
     assert!(
-        second.iter().all(is_tab),
+        second.iter().all(|request| !is_v5(request)),
         "a parked empty door must be skipped, not retried"
     );
+    upstream.shutdown();
+}
+
+#[tokio::test]
+async fn a_bytevc2_only_answer_tries_other_doors_before_one_identity_rotation() {
+    let _guard = exclusive();
+    for empty_fallbacks in [false, true] {
+        reset_playback_route_state_for_tests();
+        let upstream = MockUpstream::start(move |request| {
+            if is_model(request) && device_of(request) != "0000000000000000" {
+                MockReply::json(model_codec_body("h265"))
+            } else if empty_fallbacks && !is_v5(request) {
+                MockReply::status(200)
+            } else if is_model(request) {
+                MockReply::json(model_codec_body("bytevc2"))
+            } else {
+                MockReply::json(v5_codec_body("bytevc2"))
+            }
+        })
+        .await;
+        let (_dir, server) = server_with(&upstream, "codec-retry-door").await;
+
+        let (status, body) = episode(&server, "").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            body["video_url"], "https://example.invalid/h265-1080.mp4",
+            "{body}"
+        );
+
+        let requests = upstream.requests();
+        assert_eq!(
+            requests.len(),
+            if empty_fallbacks { 7 } else { 6 },
+            "all initial doors (one optional reprobe), then v5 and model on the replacement: {body}"
+        );
+        assert!(is_v5(&requests[0]) && requests[0].method == "POST");
+        assert!(is_model(&requests[1]) && requests[1].method == "POST");
+        let replacement = if empty_fallbacks { 5 } else { 4 };
+        assert!(is_model(&requests[replacement - 2]));
+        assert!(is_tab(&requests[replacement - 1]) && requests[replacement - 1].method == "GET");
+        assert!(is_v5(&requests[replacement]) && is_model(&requests[replacement + 1]));
+        assert!(requests[..replacement]
+            .iter()
+            .all(|request| device_of(request) == device_of(&requests[0])));
+        assert_ne!(
+            device_of(&requests[0]),
+            device_of(&requests[replacement]),
+            "the retry must step away from the identity whose lookup was undecodable"
+        );
+        assert_eq!(
+            device_of(&requests[replacement]),
+            device_of(&requests[replacement + 1])
+        );
+        upstream.shutdown();
+    }
+}
+
+#[tokio::test]
+async fn an_all_undecodable_answer_stays_terminal_and_bounded() {
+    let _guard = exclusive();
+    let upstream = MockUpstream::start(|_| MockReply::json(v5_codec_body("bytevc2"))).await;
+    let (_dir, server) = server_with(&upstream, "codec-terminal").await;
+
+    let (status, body) = episode(&server, "").await;
+    assert_eq!(status, 500, "{body}");
+    assert_eq!(body["error"], "该视频暂不支持播放", "{body}");
+    assert!(
+        !body.to_string().contains("https://"),
+        "no upstream address may leak: {body}"
+    );
+    let requests = upstream.requests();
+    assert_eq!(requests.len(), 8, "four doors on each of two identities");
+    for round in requests.as_chunks::<4>().0 {
+        assert_eq!(
+            round
+                .iter()
+                .map(|request| request.path.as_str())
+                .collect::<Vec<_>>(),
+            [V5_PATH, MODEL_PATH, MODEL_PATH, TAB_PATH]
+        );
+    }
+    assert!(requests[..4]
+        .iter()
+        .all(|request| device_of(request) == device_of(&requests[0])));
+    assert!(requests[4..]
+        .iter()
+        .all(|request| device_of(request) == device_of(&requests[4])));
+    assert_ne!(device_of(&requests[0]), device_of(&requests[4]));
+    assert!(requests
+        .iter()
+        .all(|request| !request.path.ends_with(".mp4")));
+    upstream.shutdown();
+}
+
+#[tokio::test]
+async fn an_undecodable_door_does_not_cool_or_rotate_when_the_next_door_recovers() {
+    let _guard = exclusive();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let model_counter = model_calls.clone();
+    let upstream = MockUpstream::start(move |request| {
+        if is_model(request) {
+            if model_counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                MockReply::json(model_codec_body("h265"))
+            } else {
+                MockReply::status(200)
+            }
+        } else if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+            MockReply::json(v5_codec_body("bytevc2"))
+        } else {
+            MockReply::json(v5_body())
+        }
+    })
+    .await;
+    let (_dir, server) = server_with(&upstream, "codec-no-health-penalty").await;
+    let (status, body) = episode(&server, "").await;
+    assert_eq!(status, 200, "{body}");
+    let requests = upstream.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(is_v5(&requests[0]) && is_model(&requests[1]));
+    assert_eq!(device_of(&requests[0]), device_of(&requests[1]));
+    let (status, body) = episode(&server, "").await;
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        upstream.requests()[2..].iter().any(is_v5),
+        "unplayable models do not cool a route"
+    );
+    upstream.shutdown();
+}
+
+#[tokio::test]
+async fn any_player_door_can_use_the_requests_single_reprobe() {
+    let _guard = exclusive();
+    for (selected, preceding_models) in [(MODEL_PATH, 0), (MODEL_PATH, 1), (TAB_PATH, 0)] {
+        reset_playback_route_state_for_tests();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let upstream = MockUpstream::start(move |request| {
+            if request.path == selected {
+                let selected_call = counter.fetch_add(1, Ordering::SeqCst);
+                if selected_call < preceding_models {
+                    MockReply::json(v5_codec_body("bytevc2"))
+                } else if selected_call == preceding_models {
+                    MockReply::status(200)
+                } else {
+                    MockReply::json(v5_body())
+                }
+            } else {
+                MockReply::json(v5_codec_body("bytevc2"))
+            }
+        })
+        .await;
+        let (_dir, server) = server_with(&upstream, "any-door-reprobe").await;
+        let (status, body) = episode(&server, "").await;
+        assert_eq!(status, 200, "{selected}: {body}");
+        let requests = upstream.requests();
+        let probes: Vec<_> = requests
+            .iter()
+            .filter(|request| request.path == selected)
+            .skip(preceding_models)
+            .collect();
+        assert_eq!(probes.len(), 2, "{selected}");
+        assert_eq!(device_of(probes[0]), device_of(probes[1]));
+        assert!(requests
+            .iter()
+            .all(|request| device_of(request) == device_of(&requests[0])));
+        upstream.shutdown();
+    }
+}
+
+#[tokio::test]
+async fn prefetch_never_recovers_codecs_or_registers_after_auth_failure() {
+    let _guard = exclusive();
+    for auth_failure in [false, true] {
+        reset_playback_route_state_for_tests();
+        let upstream = MockUpstream::start(move |_| {
+            if auth_failure {
+                MockReply::status(401)
+            } else {
+                MockReply::json(v5_codec_body("bytevc2"))
+            }
+        })
+        .await;
+        let dir = TempDir::new("prefetch-no-registration");
+        let server =
+            build_server(&dir, Some(upstream.origin.clone()), &[], &[], &pool_json(2)).await;
+        let (status, body) = episode(&server, "_playback_purpose=prefetch").await;
+        assert_eq!(status, 500, "{body}");
+        let requests = upstream.requests();
+        assert_eq!(
+            requests.len(),
+            1,
+            "prefetch uses one door without registration"
+        );
+        assert!(is_v5(&requests[0]));
+        upstream.shutdown();
+    }
+}
+
+#[tokio::test]
+async fn missing_dimensions_or_addresses_continue_to_the_next_door() {
+    let _guard = exclusive();
+    for variant in [
+        json!({"codec_type": "h264", "main_url": "https://example.invalid/missing-height.mp4", "vwidth": 1080}),
+        json!({"codec_type": "h264", "vwidth": 1080, "vheight": 1920}),
+    ] {
+        reset_playback_route_state_for_tests();
+        let bad = json!({"data": {"video_model": {"video_list": {"video_0": variant}}}});
+        let upstream = MockUpstream::start(move |request| {
+            if is_model(request) {
+                MockReply::json(model_codec_body("h265"))
+            } else {
+                MockReply::json(bad.clone())
+            }
+        })
+        .await;
+        let (_dir, server) = server_with(&upstream, "missing-video-fields").await;
+        let (status, body) = episode(&server, "").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["video_url"], "https://example.invalid/h265-1080.mp4");
+        let requests = upstream.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(device_of(&requests[0]), device_of(&requests[1]));
+        upstream.shutdown();
+    }
+}
+
+#[tokio::test]
+async fn an_empty_codec_replacement_keeps_its_identity_and_the_reprobe_budget() {
+    let _guard = exclusive();
+    let upstream = MockUpstream::start(|request| {
+        if device_of(request) == "0000000000000000" {
+            MockReply::json(v5_codec_body("bytevc2"))
+        } else {
+            MockReply::status(200)
+        }
+    })
+    .await;
+    let (_dir, server) = server_with(&upstream, "empty-codec-replacement").await;
+    let (status, body) = episode(&server, "").await;
+    assert_eq!(status, 500, "{body}");
+    assert_eq!(body["error"], "该视频暂不支持播放");
+    let requests = upstream.requests();
+    assert_eq!(
+        requests.len(),
+        8,
+        "four original doors, then the replacement stops at eight attempts including its reprobe"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.path.as_str())
+            .collect::<Vec<_>>(),
+        [V5_PATH, MODEL_PATH, MODEL_PATH, TAB_PATH, V5_PATH, V5_PATH, MODEL_PATH, MODEL_PATH]
+    );
+    assert!(requests[4..]
+        .iter()
+        .all(|request| device_of(request) == device_of(&requests[4])));
+    assert_ne!(device_of(&requests[0]), device_of(&requests[4]));
+    upstream.shutdown();
+}
+
+#[tokio::test]
+async fn all_cooling_doors_are_probed_until_the_last_one_recovers() {
+    let _guard = exclusive();
+    let recover = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ready = recover.clone();
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let model_counter = model_calls.clone();
+    let upstream = MockUpstream::start(move |request| {
+        if ready.load(Ordering::SeqCst)
+            && is_model(request)
+            && model_counter.fetch_add(1, Ordering::SeqCst) == 1
+        {
+            MockReply::json(model_codec_body("h265"))
+        } else {
+            MockReply::status(200)
+        }
+    })
+    .await;
+    let (_dir, server) = server_with(&upstream, "cooling-last-door").await;
+    assert_eq!(episode(&server, "").await.0, 500);
+    let before = upstream.requests().len();
+    recover.store(true, Ordering::SeqCst);
+    let (status, body) = episode(&server, "").await;
+    assert_eq!(status, 200, "{body}");
+    let requests = upstream.requests();
+    assert_eq!(
+        requests.len() - before,
+        4,
+        "every cooling door must be probed"
+    );
+    assert!(is_model(requests.last().expect("answering door")));
     upstream.shutdown();
 }

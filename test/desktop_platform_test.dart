@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:fqapp/services/app_log.dart';
 import 'package:fqapp/services/desktop_platform.dart';
 import 'package:fqapp/services/book_txt_export.dart';
 import 'package:fqapp/services/desktop_media.dart';
@@ -373,6 +374,65 @@ void main() {
       await destroyed.future;
     },
   );
+
+  test('Linux close destroys the window once after cleanup fails', () async {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    const windowChannel = MethodChannel('window_manager');
+    var destroyCalls = 0;
+    messenger.setMockMethodCallHandler(windowChannel, (call) async {
+      if (call.method == 'destroy') destroyCalls++;
+      return null;
+    });
+    final logCount = AppLog.instance.entries.length;
+    LinuxPlatform.beforeClose = () async => throw StateError('flush failed');
+    addTearDown(() {
+      LinuxPlatform.beforeClose = null;
+      messenger.setMockMethodCallHandler(windowChannel, null);
+    });
+
+    final platform = LinuxPlatform();
+    platform.onWindowClose();
+    platform.onWindowClose();
+    await Future<void>.delayed(Duration.zero);
+    platform.onWindowClose();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(destroyCalls, 1);
+    expect(
+      AppLog.instance.entries
+          .skip(logCount)
+          .where(
+            (entry) =>
+                entry.tag == 'exit' && entry.message.contains('flush failed'),
+          ),
+      hasLength(1),
+    );
+  });
+
+  test('Linux close retries when window destruction fails', () async {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    const windowChannel = MethodChannel('window_manager');
+    var destroyCalls = 0;
+    messenger.setMockMethodCallHandler(windowChannel, (call) async {
+      if (call.method == 'destroy') {
+        destroyCalls++;
+        if (destroyCalls == 1) throw PlatformException(code: 'destroy_failed');
+      }
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(windowChannel, null));
+
+    final platform = LinuxPlatform();
+    platform.onWindowClose();
+    await Future<void>.delayed(Duration.zero);
+    expect(destroyCalls, 1);
+
+    platform.onWindowClose();
+    await Future<void>.delayed(Duration.zero);
+    expect(destroyCalls, 2);
+  });
 
   // These saves exercise Linux libc and /proc, not just the platform override.
   test('Linux backup selection saves bytes, reads and cancels', () async {

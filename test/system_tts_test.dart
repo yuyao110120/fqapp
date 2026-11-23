@@ -529,7 +529,10 @@ void main() {
     tester,
   ) async {
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-    final playback = session(text: '第一句。第二句。第三句。');
+    final playback = session(
+      text: '第一句。第二句。第三句。',
+      loader: (_) async => '末章正文。',
+    );
     try {
       playback.start();
       await tester.pump();
@@ -561,6 +564,18 @@ void main() {
         '第二句。',
         '第三句。',
       ]);
+      await event({'type': 'done', 'id': second['id']});
+      await tester.pump();
+      final third = spoken().last.arguments as Map;
+      await event({'type': 'done', 'id': third['id']});
+      await tester.pump();
+      expect(playback.index, 1);
+      final finalChapter = spoken().last.arguments as Map;
+      await event({'type': 'done', 'id': finalChapter['id']});
+      await tester.pump();
+      expect(playback.completed, isTrue);
+      expect(ListeningSession.instance.completed, isTrue);
+      expect(ListeningSession.instance.playing, isFalse);
     } finally {
       await playback.close();
       await tester.pump();

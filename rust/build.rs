@@ -1,7 +1,9 @@
 fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
-    if target_os != "windows" && target_os != "linux" && target_os != "macos" {
-        return;
+    // The encrypted-media C implementation (the same sources CryptoDataSource
+    // links) is needed on the desktop ports and on iOS: desktop_media exports
+    // the sp_stream_* entry points and the build fails without it.
+    if target_os != "windows" && target_os != "linux" && target_os != "macos" && target_os != "ios" {        return;
     }
     let sources = [
         "crypto_core/sp_error.c",

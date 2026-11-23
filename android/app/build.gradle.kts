@@ -39,6 +39,11 @@ val hasReleaseSigning = listOf(
     releaseKeyPassword,
 ).all { it != null }
 
+// A different application ID keeps a local modified build's data separate.
+val coexistBuild = providers.environmentVariable("FQAPP_COEXIST")
+    .map { it.toBoolean() }
+    .getOrElse(false)
+
 android {
     namespace = "com.fqapp.fqapp"
     compileSdk = flutter.compileSdkVersion
@@ -60,7 +65,8 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.fqapp.fqapp"
+        applicationId = if (coexistBuild) "com.fqapp.fqapp.mod" else "com.fqapp.fqapp"
+        manifestPlaceholders["appLabel"] = if (coexistBuild) "什锦铺·改" else "什锦铺"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

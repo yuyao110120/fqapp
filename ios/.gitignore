@@ -40,3 +40,5 @@ Runner/GeneratedPluginRegistrant.*
 # fqapp: Rust 核心静态库由 scripts/build_rust_ios.sh 生成，不入库
 Frameworks/*.a
 Frameworks/*.xcframework
+Frameworks/iphoneos/
+Frameworks/iphonesimulator/

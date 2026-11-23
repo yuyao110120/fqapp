@@ -570,6 +570,7 @@ void main() {
           );
           expect(secureKeys, nativeBefore);
           expect(ShelfStore.instance.contains('book', 'kept-local'), isTrue);
+          await _expectSyncSkipsUnchangedRecords(service, dav);
           final afterConfigure = Map<String, String>.of(flutterSecureValues);
 
           await service.shutdown();
@@ -1269,6 +1270,60 @@ void main() {
   });
 }
 
+Future<void> _expectSyncSkipsUnchangedRecords(
+  MultiDeviceSyncService service,
+  _TestDav dav,
+) async {
+  await LibraryStore.instance.addHistory({
+    'id': 'reading-progress',
+    'kind': 'book',
+    'position': 42,
+  });
+  final connection = {
+    'provider': 'webdav',
+    'enabled': 'true',
+    'endpoint': config.directory,
+    'username': config.username,
+    'password': config.password,
+  };
+  await http.runWithClient(() async {
+    final preview = await service.previewWebDav(connection);
+    await service.configure({...connection, 'webdavPreview': preview.revision});
+    await service.sync();
+    expect(service.status, '同步完成');
+
+    final historyWrites = <BoxEvent>[];
+    final watch = LibraryStore.instance.historyChanges.listen(
+      historyWrites.add,
+    );
+    try {
+      final writes = (dav.public.writes, dav.journal.writes);
+      await service.sync();
+      expect(service.status, '同步完成');
+      expect((dav.public.writes, dav.journal.writes), writes);
+      expect(historyWrites, isEmpty);
+
+      final remote = WebDavSyncDocument.decode(dav.public.bytes!);
+      expect(remote.backup.history.single['id'], 'reading-progress');
+      dav.seed(
+        WebDavSyncDocument(
+          backup(
+            shelf: remote.backup.shelf,
+            createdAt: remote.backup.createdAt,
+          ),
+          remote.removedShelf,
+        ).encode(),
+      );
+      await service.sync();
+      expect(service.status, '同步完成');
+      expect(await LibraryStore.instance.history(), isEmpty);
+      expect(historyWrites.where((event) => event.deleted), hasLength(1));
+    } finally {
+      await watch.cancel();
+    }
+  }, dav.client);
+}
+
 class _LocalWebDav {
   _LocalWebDav({
     SyncDocument? document,
@@ -1406,22 +1461,15 @@ class _TestDav {
   final log = <String>[];
   bool offline = false;
 
+  http.Client client() => MockClient((request) {
+    final metadata = request.url.pathSegments.last == WebDavClient.metadataName;
+    log.add('${metadata ? 'journal' : 'public'} ${request.method}');
+    return (metadata ? journal : public).handle(request, offline);
+  });
+
   UpstreamWebDavExchange exchange() => UpstreamWebDavExchange(
-    WebDavClient(
-      config,
-      client: MockClient((request) {
-        log.add('public ${request.method}');
-        return public.handle(request, offline);
-      }),
-    ),
-    WebDavClient(
-      config,
-      forSyncMetadata: true,
-      client: MockClient((request) {
-        log.add('journal ${request.method}');
-        return journal.handle(request, offline);
-      }),
-    ),
+    WebDavClient(config, client: client()),
+    WebDavClient(config, forSyncMetadata: true, client: client()),
   );
 
   void seed(Uint8List bytes) => public.seed(bytes);

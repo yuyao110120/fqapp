@@ -19,6 +19,7 @@ import 'chapter_text_formatter.dart';
 import 'listening_session.dart';
 import 'narration_sentence.dart';
 import 'native_player.dart';
+import 'ios_audio_session.dart';
 
 class SystemTtsEngine {
   const SystemTtsEngine(this.package, this.label);
@@ -341,6 +342,16 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
       onAction: (action) {
         if (closed) return;
         switch (action) {
+          case 'interruptionPause':
+            unawaited(_pauseForInterruption());
+          case 'interruptionResume':
+            if (_resumeOnFocusGain) {
+              if (_allowed) {
+                unawaited(resume());
+              } else {
+                _pendingFocusResume = true;
+              }
+            }
           case 'play':
             unawaited(resume());
           case 'pause':
@@ -360,6 +371,7 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> openChapter(int next, {int offset = 0}) async {
+    IosAudioSession.cancelInterruption(_mediaOwner);
     if (closed || next < 0 || next >= book.chapters.length) return;
     final token = ++_generation;
     _loadRequest?.cancel();
@@ -416,6 +428,18 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _begin(int token) async {
     await beforePlay();
     if (!_current(token)) return;
+    if (isIOSPlatform) {
+      NativePlayer.claimRemoteOwner(_mediaOwner);
+      if (!await IosAudioSession.prepare(owner: _mediaOwner, mode: 'audio')) {
+        if (_current(token)) {
+          wantPlay = false;
+          loading = false;
+          _publish();
+        }
+        return;
+      }
+      if (!_current(token)) return;
+    }
     if (!_ready) {
       loading = true;
       _publish();
@@ -613,6 +637,7 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> toggle() => wantPlay ? pause() : resume();
 
   Future<void> resume() async {
+    IosAudioSession.cancelInterruption(_mediaOwner);
     if (closed || wantPlay || !_allowed) return;
     _pendingFocusResume = false;
     _resumeOnFocusGain = false;
@@ -622,7 +647,9 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
     }
     final token = ++_generation;
     wantPlay = true;
-    if (isLinuxDesktop) NativePlayer.claimRemoteOwner(_mediaOwner);
+    if (isLinuxDesktop || isIOSPlatform) {
+      NativePlayer.claimRemoteOwner(_mediaOwner);
+    }
     error = null;
     if (completed) {
       _offset = 0;
@@ -641,6 +668,7 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
   /// 会让蓝牙播放键、媒体通知都指向这个已经停下的朗读。所以这里照旧 `stop()`，
   /// 把焦点交还；`_pauseForInterruption` 才保留焦点等系统交还后自动续播。
   Future<void> pause() async {
+    IosAudioSession.cancelInterruption(_mediaOwner);
     _visibilityResumeGeneration = null;
     if (closed) return;
     // 用户（或任何非焦点路径）主动暂停：清掉「挂断后自动续播」的意图，
@@ -712,12 +740,14 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
         precise: _rangeCapable || _rangeSeen,
       ),
     );
+    if (completed) ListeningSession.instance.markCompleted();
     notifyListeners();
     if (notification) {
       _notificationQueue = _notificationQueue.then((_) async {
         if (closed) return;
         if (!isLinuxDesktop &&
-            !AudioPreferences.instance.backgroundPlayback.value) {
+            !AudioPreferences.instance.backgroundPlayback.value &&
+            (!isIOSPlatform || !_appActive)) {
           await NativePlayer.stopListenForeground(owner: _mediaOwner);
         } else {
           await NativePlayer.startListenForeground(

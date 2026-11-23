@@ -8,6 +8,7 @@ mixin _LibraryClassicChrome on _LibraryShelfViews {
   bool _classicHasFiltersForTab(int tab) =>
       _activeFiltersForTab(tab) > 0 ||
       _categoryForTab(tab) != ShelfCategory.all ||
+      (tab == 0 && _shelfKindFilter != null) ||
       (tab == 2 && _collectionFilter != null);
 
   void _setClassicLayout(BookshelfLayout layout) {
@@ -193,90 +194,121 @@ mixin _LibraryClassicChrome on _LibraryShelfViews {
       ShelfTokens.screenPadding,
       ShelfTokens.spaceS,
     ),
-    child: LayoutBuilder(
-      builder: (context, constraints) {
-        final wide = constraints.maxWidth >= 480;
-        if (!isDesktopShell && MediaQuery.sizeOf(context).width < 600) {
-          return _classicCompactToolbar(palette, tab);
-        }
-        final stacked =
-            !wide || MediaQuery.textScalerOf(context).scale(1) > 1.4;
-        final collectionFilters = Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final (value, label) in const [
-              (null, '全部'),
-              ('video', '短剧'),
-              ('manju', '漫剧'),
-            ])
-              HomeChip(
-                key: Key('library-collection-filter-${value ?? 'all'}'),
-                label: label,
-                selected: _collectionFilter == value,
-                onTap: () => setState(() => _collectionFilter = value),
-              ),
-          ],
-        );
-        final shelfFilters = Row(
-          children: [
-            _classicTodayPill(palette),
-            Expanded(
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: _classicGroupChip(palette, tab),
-              ),
-            ),
-          ],
-        );
-        final layouts = _ClassicLayoutSegments(
-          current: _classicLayout.value,
-          palette: palette,
-          onChanged: _setClassicLayout,
-        );
-        if (!stacked) {
-          return Row(
-            children: [
-              Expanded(child: tab == 0 ? shelfFilters : collectionFilters),
-              const SizedBox(width: 8),
-              layouts,
-            ],
-          );
-        }
-        if (tab == 0) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Align(
-                alignment: Alignment.centerLeft,
-                child: _classicTodayPill(palette),
-              ),
-              const SizedBox(height: 4),
-              Row(
-                children: [
-                  Flexible(
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: _classicGroupChip(palette, tab),
-                    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final wide = constraints.maxWidth >= 480;
+            if (!isDesktopShell && MediaQuery.sizeOf(context).width < 600) {
+              return _classicCompactToolbar(palette, tab);
+            }
+            final stacked =
+                !wide || MediaQuery.textScalerOf(context).scale(1) > 1.4;
+            final collectionFilters = Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final (value, label) in const [
+                  (null, '全部'),
+                  ('video', '短剧'),
+                  ('manju', '漫剧'),
+                ])
+                  HomeChip(
+                    key: Key('library-collection-filter-${value ?? 'all'}'),
+                    label: label,
+                    selected: _collectionFilter == value,
+                    onTap: () => setState(() => _collectionFilter = value),
                   ),
+              ],
+            );
+            final shelfFilters = Row(
+              children: [
+                _classicTodayPill(palette),
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: _classicGroupChip(palette, tab),
+                  ),
+                ),
+              ],
+            );
+            final layouts = _ClassicLayoutSegments(
+              current: _classicLayout.value,
+              palette: palette,
+              onChanged: _setClassicLayout,
+            );
+            if (!stacked) {
+              return Row(
+                children: [
+                  Expanded(child: tab == 0 ? shelfFilters : collectionFilters),
                   const SizedBox(width: 8),
                   layouts,
                 ],
-              ),
-            ],
-          );
-        }
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            collectionFilters,
-            const SizedBox(height: 4),
-            Align(alignment: Alignment.centerRight, child: layouts),
-          ],
-        );
-      },
+              );
+            }
+            if (tab == 0) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: _classicTodayPill(palette),
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: _classicGroupChip(palette, tab),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      layouts,
+                    ],
+                  ),
+                ],
+              );
+            }
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                collectionFilters,
+                const SizedBox(height: 4),
+                Align(alignment: Alignment.centerRight, child: layouts),
+              ],
+            );
+          },
+        ),
+        if (tab == 0) ...[
+          const SizedBox(height: ShelfTokens.spaceXS),
+          _classicShelfKindFilter(),
+        ],
+      ],
     ),
+  );
+
+  /// 书架 tab 的媒介类型筛选(全部 / 小说 / 漫画 / 短剧 / 漫剧 / 听书)。
+  Widget _classicShelfKindFilter() => Wrap(
+    spacing: 8,
+    runSpacing: 8,
+    children: [
+      for (final (value, label) in const [
+        (null, '全部'),
+        ('book', '小说'),
+        ('manga', '漫画'),
+        ('video', '短剧'),
+        ('manju', '漫剧'),
+        ('audio', '听书'),
+      ])
+        HomeChip(
+          key: Key('library-shelf-kind-${value ?? 'all'}'),
+          label: label,
+          selected: _shelfKindFilter == value,
+          onTap: () => setState(() => _shelfKindFilter = value),
+        ),
+    ],
   );
 
   /// 窄屏或大字号时让整块控件换行，保留每个入口的触控宽度。

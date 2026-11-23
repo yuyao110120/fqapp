@@ -246,8 +246,10 @@ Future<void> _query(WidgetTester tester, String text) async {
   await tester.pumpAndSettle();
 }
 
-double _directoryOffset(WidgetTester tester) =>
-    tester.widget<ListView>(_key('reader-directory-scroll')).controller!.offset;
+double _directoryOffset(WidgetTester tester) => tester
+    .widget<ScrollView>(_key('reader-directory-scroll'))
+    .controller!
+    .offset;
 
 double _notesOffset(WidgetTester tester) => tester
     .state<ScrollableState>(
@@ -466,12 +468,6 @@ void main() {
             expect(rect.top, greaterThanOrEqualTo(bounds.top));
             expect(rect.bottom, lessThanOrEqualTo(bounds.bottom));
           }
-          final list = tester.widget<ListView>(_key('reader-directory-scroll'));
-          // Volume headers carry their own stride now, so the chapter rows go
-          // through the per-row builder instead of one global itemExtent; the
-          // sibling row below still pins the shared chapter stride.
-          expect(list.itemExtent, isNull);
-          expect(list.itemExtentBuilder, isNotNull);
           expect(
             bounds.height,
             greaterThanOrEqualTo(title.height + progress.height),
@@ -700,6 +696,48 @@ void main() {
       },
     );
   }
+
+  testWidgets(
+    'large directory scrolls to the end and opens a chapter in the last volume',
+    (tester) async {
+      final fixture = _PanelFixture();
+      final chapters = [
+        for (var index = 0; index < 9000; index++)
+          Chapter(
+            itemId: 'chapter-$index',
+            title: '第 ${index + 1} 章',
+            volumeName: index < 8000 ? '首卷' : '卷 $index',
+          ),
+      ];
+      await fixture.open(tester, chapters: chapters);
+      final scroll = _key('reader-directory-scroll');
+      final position = tester.widget<ScrollView>(scroll).controller!.position;
+      final viewport = tester.getRect(scroll);
+      await tester.fling(scroll, const Offset(0, -450), 2600);
+      await tester.pumpAndSettle();
+      expect(position.pixels, greaterThan(450));
+
+      final handle = _key('reader-directory-fast-scroll');
+      final gesture = await tester.startGesture(tester.getCenter(handle));
+      await gesture.moveTo(
+        Offset(tester.getCenter(handle).dx, viewport.bottom),
+      );
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(position.pixels, closeTo(position.maxScrollExtent, 1));
+      expect(_key('reader-volume-卷 8999').hitTestable(), findsOneWidget);
+      expect(_key('reader-directory-row-2'), findsNothing);
+      await _tap(tester, _key('reader-volume-卷 8999'));
+      await tester.drag(scroll, const Offset(0, -180));
+      await tester.pumpAndSettle();
+      final lastChapter = _key('reader-directory-row-8999').hitTestable();
+      expect(lastChapter, findsOneWidget);
+      await _tap(tester, lastChapter);
+      expect(fixture.selectedChapter, 8999);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'chapter filter and reverse order return catalogue index through the shell route',

@@ -86,7 +86,7 @@ void _beginAdvanceCountdown(
     c._advanceCountdown.value = null;
     if (c._closed) return;
     if (c._index + 1 < c._chapters.length) {
-      unawaited(c._openChapter(c._index + 1));
+      unawaited(c._switchChapter(c._index + 1));
     }
   });
 }
@@ -259,6 +259,12 @@ void _onChapterFinished(
     return;
   }
   if (shouldAdvance && c._index + 1 < c._chapters.length) {
+    // 后台不能用倒计时：`Timer` 会被系统挂起，而 `_openChapter` 在后台
+    // 新建播放器会卡死（见 `_switchChapter` 注释）。直接复用播放器换章。
+    if (isIOSPlatform && !c._appActive) {
+      unawaited(c._switchChapter(c._index + 1));
+      return;
+    }
     _beginAdvanceCountdown(c);
     return;
   }
@@ -275,6 +281,13 @@ void _handleChapterCompleted(
   int generation,
 ) {
   if (c._closed || c._completed) return;
+  AppLog.d(
+    'audio',
+    'event=completed generation=$generation '
+        'position_ms=${player.position.inMilliseconds} '
+        'duration_ms=${c._duration.inMilliseconds} '
+        'skip_outro=${c._skipOutroFired}',
+  );
   _cancelTrackRecovery(c);
   final shouldAdvance = c._wantPlay && c._autoAdvance;
   c._update(() {

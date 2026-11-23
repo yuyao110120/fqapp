@@ -156,6 +156,9 @@ mixin _LibraryPageActions on _LibraryPageStateBase {
     await _persist(() => view.setSource(ShelfSourceFilter.all));
     await _persist(() => view.setCategoryOf(_scope, ShelfCategory.all));
     if (mounted && _tab == 2) setState(() => _collectionFilter = null);
+    if (mounted && _tab == 0 && _shelfKindFilter != null) {
+      setState(() => _shelfKindFilter = null);
+    }
   }
 
   Future<void> _openMoreMenu(BuildContext anchor) async {
@@ -381,7 +384,12 @@ mixin _LibraryPageActions on _LibraryPageStateBase {
         );
       default:
         return ShelfProjection.apply(
-          _shelf,
+          _shelfKindFilter == null
+              ? _shelf
+              : [
+                  for (final entry in _shelf)
+                    if (entry.item.kind == _shelfKindFilter) entry,
+                ],
           sort: view.sort,
           reading: view.filter,
           source: view.source,

@@ -27,6 +27,7 @@ class LegacyUiNotice {
       data = hasLocalData;
     } else {
       try {
+        if (!LibraryStore.instance.isInitialized) return false;
         data =
             ShelfStore.instance.records().isNotEmpty ||
             LibraryStore.instance.historySnapshot().isNotEmpty;

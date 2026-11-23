@@ -419,7 +419,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('收藏 tab 只放短剧/漫剧，书架 tab 只放书籍', (tester) async {
+    testWidgets('书架 tab 收全部条目并用类型筛选区分，收藏 tab 只放短剧/漫剧', (tester) async {
       await tester.runAsync(() async {
         await ShelfStore.instance.add(_item('plain-book', title: '架上小说'));
         await ShelfStore.instance.add(
@@ -432,10 +432,27 @@ void main() {
       await tester.pumpWidget(_app());
       await tester.pumpAndSettle();
 
-      // 书架 tab：只有书，视频类不混进来。
+      // 书架 tab 默认「全部」：小说、短剧、漫剧都在同一页。
+      expect(find.text('架上小说'), findsWidgets);
+      expect(find.text('追的短剧'), findsWidgets);
+      expect(find.text('追的漫剧'), findsWidgets);
+
+      // 次级筛选按媒介切分。
+      await tester.tap(find.byKey(const Key('library-shelf-kind-book')));
+      await tester.pumpAndSettle();
       expect(find.text('架上小说'), findsWidgets);
       expect(find.text('追的短剧'), findsNothing);
       expect(find.text('追的漫剧'), findsNothing);
+
+      await tester.tap(find.byKey(const Key('library-shelf-kind-video')));
+      await tester.pumpAndSettle();
+      expect(find.text('追的短剧'), findsWidgets);
+      expect(find.text('架上小说'), findsNothing);
+
+      await tester.tap(find.byKey(const Key('library-shelf-kind-all')));
+      await tester.pumpAndSettle();
+      expect(find.text('架上小说'), findsWidgets);
+      expect(find.text('追的短剧'), findsWidgets);
 
       await tester.tap(find.text('收藏'));
       await tester.pumpAndSettle();

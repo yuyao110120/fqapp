@@ -115,10 +115,15 @@ class LinuxPlatform with WindowListener {
       ).invokeMethod<void>('setKeepScreenOn', {'on': false});
       await _sessionEvents?.cancel();
       _sessionEvents = null;
-      await windowManager.destroy();
-    } catch (_) {
-      _closing = false;
-      rethrow;
+    } catch (error, stack) {
+      AppLog.w('exit', 'Linux 关窗清理失败', error: error, stack: stack);
+    } finally {
+      try {
+        await windowManager.destroy();
+      } catch (error, stack) {
+        _closing = false;
+        AppLog.w('exit', 'Linux 窗口销毁失败', error: error, stack: stack);
+      }
     }
   }
 }

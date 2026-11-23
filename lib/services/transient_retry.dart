@@ -7,10 +7,9 @@ import 'api_client.dart';
 
 /// Retries a transient async failure a few times with linear backoff.
 ///
-/// The in-app backend draws a pooled device per upstream request. The audio
-/// player host occasionally rejects that device with a body-level 403 inside
-/// an HTTP 200 ("invalid aid"); the next draw usually succeeds, so the
-/// listening page retries the source fetch before surfacing an error.
+/// The listening page uses this for recoverable transport failures. HTTP
+/// authentication and same-device backoff are owned by the backend; a body
+/// business code alone does not establish whether another attempt can recover.
 Future<T> retryTransient<T>(
   Future<T> Function() task, {
   int attempts = 3,
@@ -26,9 +25,8 @@ Future<T> retryTransient<T>(
       return await task();
     } catch (error) {
       lastError = error;
-      // Deterministic failures (a business code that will answer the same way
-      // every time) must not burn the remaining attempts and their backoff;
-      // callers that can tell them apart pass [shouldRetry].
+      // Failures outside the caller's recovery policy must not burn the
+      // remaining attempts and their backoff; callers pass [shouldRetry].
       if (shouldRetry != null && !shouldRetry(error)) break;
       if (attempt + 1 < attempts) {
         await Future<void>.delayed(baseDelay * (attempt + 1));
@@ -40,13 +38,9 @@ Future<T> retryTransient<T>(
 
 /// Whether [error] is a transient failure worth another attempt.
 ///
-/// The local backend draws a pooled device per upstream request: a dropped
-/// connection, HTTP 408/429 or a 5xx can succeed on the next draw. Everything
-/// else is deterministic - a timeout already spent its deadline, another 4xx
-/// (404/403) and upstream business codes (NO_THIS_TONE, audit rejection) answer
-/// the same way every time - so retrying only delays the same failure. Callers
-/// that put a per-attempt deadline on a request (the audio source fetch allows
-/// 30 seconds) must not turn one failure into minutes of waiting.
+/// A dropped connection, HTTP 408/429 or a 5xx can recover. A timeout already
+/// spent its deadline; other 4xx and business codes have no recovery policy
+/// here. Backend authentication retries must not be multiplied blindly.
 bool isTransientNetworkFailure(Object error) {
   if (error is ApiException) {
     final status = error.statusCode;

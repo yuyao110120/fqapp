@@ -216,9 +216,27 @@ extension _ReaderPageProgress on _ReaderPageState {
     }
     if (_progressPreviewActive || _settingsPreviewActive) return;
     _keepChapterEndAnchor = false;
-    _settleReadTime();
-    unawaited(_persistProgress());
-    unawaited(_maybeAiPrefetch());
+    // PageView reports the new page around the animation midpoint. Do not
+    // start Hive writes, sync capture and AI prefetch in the remaining frames.
+    // Consecutive turns coalesce; chapter changes and dispose still save directly.
+    _saveTimer?.cancel();
+    void save() {
+      if (!mounted) return;
+      if (_pagedKey.currentState?.isTurning ?? false) {
+        _saveTimer = Timer(const Duration(milliseconds: 250), save);
+        return;
+      }
+      _settleReadTime();
+      unawaited(_persistProgress());
+      unawaited(_maybeAiPrefetch());
+    }
+
+    if (einkModeNotifier.value ||
+        _preferences.pageTurnStyle == ReaderPageTurnStyle.none) {
+      save();
+    } else {
+      _saveTimer = Timer(const Duration(milliseconds: 250), save);
+    }
     // 分页模式的实际翻页：累加墨水屏刷新计数（覆盖音量键/自动翻页/点按翻页）。
     _recordEinkPageTurn();
   }

@@ -105,6 +105,17 @@ impl Policy {
             }
         }
     }
+
+    /// iOS builds the same desktop media path but applies no proxy policy
+    /// (the shared `configure` is a no-op there too), so the blocking client
+    /// is passed through untouched.
+    #[cfg(target_os = "ios")]
+    pub(crate) fn configure_blocking(
+        &self,
+        builder: reqwest::blocking::ClientBuilder,
+    ) -> reqwest::blocking::ClientBuilder {
+        builder
+    }
 }
 
 pub(crate) struct ClientCache<T>(Mutex<Option<(u64, T)>>);

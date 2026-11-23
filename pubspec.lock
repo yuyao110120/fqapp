@@ -667,6 +667,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.2.6"
+  media_kit_libs_ios_video:
+    dependency: "direct main"
+    description:
+      name: media_kit_libs_ios_video
+      sha256: b5382994eb37a4564c368386c154ad70ba0cc78dacdd3fb0cd9f30db6d837991
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.1.4"
   media_kit_libs_linux:
     dependency: "direct main"
     description:
@@ -1257,7 +1265,7 @@ packages:
     source: hosted
     version: "15.4.0"
   wakelock_plus:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: wakelock_plus
       sha256: ddf3db70eaa10c37558ff817519b85d527dbd21034fd5d8e1c2e85f31588f1c1

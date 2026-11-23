@@ -71,7 +71,14 @@ void main() {
     await tester.pumpAndSettle();
 
     await _chooseCategory(tester, '想读');
-    expect(_rowKeys(tester), ['shelf-book-book:shelf-book']);
+    // 书架 tab 收全部媒介:该分组下的书与短剧同页出现(收藏 tab 仍只放视频)。
+    expect(
+      _rowKeys(tester),
+      unorderedEquals(<String>[
+        'shelf-book-video:video-book',
+        'shelf-book-book:shelf-book',
+      ]),
+    );
 
     await tester.tap(find.text('浏览历史'));
     await tester.pumpAndSettle();

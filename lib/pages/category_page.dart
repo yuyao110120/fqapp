@@ -213,7 +213,7 @@ class _CategoryPageState extends State<CategoryPage> {
     });
   }
 
-  void _openSearch({String? query}) {
+  void _openSearch({String? query, String? tag}) {
     final category = switch (_tabValue) {
       3 => SearchCategory.audio,
       5 => SearchCategory.manga,
@@ -223,8 +223,11 @@ class _CategoryPageState extends State<CategoryPage> {
     Navigator.of(context).push(
       SearchRoute.open<void>(
         context,
-        builder: (_) =>
-            SearchPage(initialQuery: query, initialCategory: category),
+        builder: (_) => SearchPage(
+          initialQuery: query,
+          initialTag: tag,
+          initialCategory: category,
+        ),
       ),
     );
   }
@@ -286,7 +289,7 @@ class _CategoryPageState extends State<CategoryPage> {
                           child: _SectionList(
                             state: this,
                             columns: columns,
-                            onSearch: (name) => _openSearch(query: name),
+                            onSearch: (name) => _openSearch(tag: name),
                           ),
                         ),
                       ],

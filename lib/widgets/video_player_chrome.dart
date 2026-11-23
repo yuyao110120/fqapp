@@ -12,6 +12,7 @@ import '../models/audio_extra.dart';
 import '../models/media_item.dart';
 import '../services/episode_source_cache.dart';
 import '../services/haptic_preferences.dart';
+import '../services/ios_audio_session.dart';
 import '../services/native_player.dart';
 import '../services/playback_format.dart';
 import '../services/playback_gesture_levels.dart';
@@ -321,6 +322,14 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   /// yet; back-to-back taps accumulate onto it instead of reusing the last
   /// acknowledged position.
   Duration? _pendingSeek;
+
+  /// iOS 媒体会话（锁屏卡片 / 控制中心 / 耳机键）。非 iOS 或未接入时为空操作。
+  ///
+  /// 听书页自己会接一套 IosAudioSession；两处按「谁最后接入谁接管」协作，
+  /// 播放页只在自己仍是接管方时清理，避免把听书的会话一起关掉。
+  final String _iosMediaOwner = NativePlayer.allocateRemoteOwner();
+  bool _iosMediaArmed = false;
+  DateTime? _lastIosMediaPush;
   late final _timeline = Listenable.merge([_position, _seekValue]);
   StreamSubscription<Duration>? _positionSubscription;
   StreamSubscription<bool>? _playWhenReadySubscription;
@@ -615,6 +624,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     _pages = PageController(initialPage: widget.currentIndex);
     _panel.addListener(_panelChanged);
     _listenToPosition();
+    _attachIosMediaSession();
     WidgetsBinding.instance.addObserver(this);
     _appActive = playbackAppIsActive(WidgetsBinding.instance.lifecycleState);
     _lockController =
@@ -683,6 +693,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
       _bottomPanelCollapsed = false;
     }
     if (oldWidget.player != widget.player) {
+      IosAudioSession.cancelInterruption(_iosMediaOwner);
+      widget.player?.iosMediaOwner = _iosMediaOwner;
+      widget.player?.iosMediaAction = _handleIosMediaAction;
       _listenToPosition();
       // 切集/切清晰度会替换播放器，触摸锁属于播放页面，需跨集保留。
       _doubleTapGuard?.cancel();
@@ -738,10 +751,33 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
       if ((!widget.playing && !_seeking) || !widget.enabled) _visible = true;
       _scheduleHide();
     }
+    if (oldWidget.enabled && !widget.enabled) {
+      unawaited(IosAudioSession.stop(owner: _iosMediaOwner));
+    }
+    if ((!oldWidget.playing && widget.playing ||
+            !oldWidget.enabled && widget.enabled ||
+            oldWidget.player != widget.player) &&
+        (widget.player?.playWhenReady ?? false) &&
+        widget.enabled &&
+        _iosMediaArmed) {
+      IosAudioSession.claim(
+        owner: _iosMediaOwner,
+        onAction: _handleIosMediaAction,
+      );
+    }
+    if (oldWidget.playing != widget.playing ||
+        oldWidget.currentIndex != widget.currentIndex ||
+        oldWidget.duration != widget.duration ||
+        oldWidget.enabled != widget.enabled ||
+        oldWidget.player != widget.player ||
+        oldWidget.episodes.length != widget.episodes.length) {
+      _publishIosMedia(force: true);
+    }
   }
 
   @override
   void dispose() {
+    _detachIosMediaSession();
     WidgetsBinding.instance.removeObserver(this);
     _hideTimer?.cancel();
     _doubleTapGuard?.cancel();
@@ -778,6 +814,119 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     super.dispose();
   }
 
+  // MARK: - iOS 媒体会话（锁屏 / 控制中心 / 耳机键）
+
+  /// 接管 MPRemoteCommandCenter。
+  ///
+  /// 听书链路（AudioPlaybackController）也接同一套桥；播放页进来时直接
+  /// 申请独立的 owner，离开时只在自己仍拥有会话时清理，
+  /// 因此从播放页进听书页不会因为播放页 dispose 而丢掉会话。
+  void _attachIosMediaSession() {
+    if (!isIOSPlatform) return;
+    _iosMediaArmed = true;
+    widget.player?.iosMediaOwner = _iosMediaOwner;
+    widget.player?.iosMediaAction = _handleIosMediaAction;
+    if (widget.player?.playWhenReady ?? false) {
+      IosAudioSession.claim(
+        owner: _iosMediaOwner,
+        onAction: _handleIosMediaAction,
+      );
+    }
+    _publishIosMedia(force: true);
+  }
+
+  void _detachIosMediaSession() {
+    if (!_iosMediaArmed) return;
+    _iosMediaArmed = false;
+    unawaited(IosAudioSession.stop(owner: _iosMediaOwner));
+  }
+
+  /// 耳机键 / 锁屏 / 控制中心的动作。
+  ///
+  /// 不能复用 _togglePlayback：那条路径带 _appActive 等前台态门禁，
+  /// 而在锁屏或后台正是需要它工作的时候。
+  void _handleIosMediaAction(String action, int? positionMs) {
+    final player = widget.player;
+    if (player == null || !_ready || !IosAudioSession.owns(_iosMediaOwner)) {
+      return;
+    }
+    if (action != 'interruptionPause' && action != 'interruptionResume') {
+      IosAudioSession.cancelInterruption(_iosMediaOwner);
+    }
+    switch (action) {
+      case 'interruptionResume':
+      case 'play':
+        unawaited(_control((p) => p.play()));
+      case 'interruptionPause':
+        _resumeOnForeground = false;
+        unawaited(_control((p) => p.pauseForInterruption()));
+      case 'pause':
+        _resumeOnForeground = false;
+        unawaited(_control((p) => p.pause()));
+      case 'playPause':
+        final pause = _playbackRequested;
+        unawaited(_control((p) => pause ? p.pause() : p.play()));
+      case 'next':
+        unawaited(_selectEpisode(widget.currentIndex + 1));
+      case 'prev':
+        unawaited(_selectEpisode(widget.currentIndex - 1));
+      case 'seek':
+        if (positionMs == null) return;
+        final total = widget.duration.inMilliseconds;
+        final clamped = total > 0 ? positionMs.clamp(0, total) : positionMs;
+        final target = Duration(milliseconds: clamped);
+        _position.value = target;
+        widget.onSeeked?.call(target);
+        unawaited(_control((p) => p.seek(target)));
+      case 'stop':
+        _resumeOnForeground = false;
+        unawaited(_control((p) => p.pause()));
+        unawaited(IosAudioSession.stop(owner: _iosMediaOwner));
+        return;
+      default:
+        return;
+    }
+    _publishIosMedia(force: true);
+  }
+
+  /// 把当前进度与剧集信息推给系统。原生每收到一次就重写锁屏卡片；
+  /// 进度流是 200ms 一条，这里节流到 1 秒（force 用于状态切换）。
+  void _publishIosMedia({bool force = false}) {
+    if (!_iosMediaArmed || !IosAudioSession.owns(_iosMediaOwner)) return;
+    final now = DateTime.now();
+    final previous = _lastIosMediaPush;
+    if (!force &&
+        previous != null &&
+        now.difference(previous) < const Duration(seconds: 1)) {
+      return;
+    }
+    _lastIosMediaPush = now;
+    final index = widget.currentIndex;
+    final episodes = widget.episodes;
+    final episode = index >= 0 && index < episodes.length
+        ? episodes[index].title
+        : widget.episodeLabel;
+    unawaited(
+      IosAudioSession.update(
+        owner: _iosMediaOwner,
+        title: widget.seriesTitle.isNotEmpty
+            ? widget.seriesTitle
+            : widget.title,
+        episode: episode,
+        cover: widget.seriesCover,
+        playing:
+            (widget.player?.playWhenReady ?? widget.playing) &&
+            !(widget.player?.completed ?? false),
+        positionMs: _position.value.inMilliseconds,
+        durationMs: widget.duration.inMilliseconds,
+        rate: _rate,
+        hasPrev: index > 0,
+        hasNext: index + 1 < episodes.length,
+        mode: 'video',
+      ),
+    );
+  }
+
   void _listenToPosition() {
     unawaited(_positionSubscription?.cancel());
     unawaited(_playWhenReadySubscription?.cancel());
@@ -789,10 +938,19 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     _positionSubscription = player?.positionStream.listen((position) {
       if (mounted && identical(widget.player, player)) {
         _position.value = position;
+        _publishIosMedia();
       }
     });
-    _playWhenReadySubscription = player?.playWhenReadyStream.listen((_) {
-      if (mounted && identical(widget.player, player)) setState(() {});
+    _playWhenReadySubscription = player?.playWhenReadyStream.listen((playing) {
+      if (!mounted || !identical(widget.player, player)) return;
+      if (playing && _iosMediaArmed) {
+        IosAudioSession.claim(
+          owner: _iosMediaOwner,
+          onAction: _handleIosMediaAction,
+        );
+      }
+      _publishIosMedia(force: true);
+      setState(() {});
     });
   }
 
@@ -811,6 +969,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     if (player == null || !_ready) return;
     try {
       await operation(player);
+      if (mounted && widget.player == player) _publishIosMedia(force: true);
     } catch (error) {
       if (mounted && widget.player == player && _ready) widget.onError(error);
     }
@@ -843,7 +1002,10 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
       _endBoost();
       _doubleTapGuard?.cancel();
       _hideTimer?.cancel();
-      if (!floating) unawaited(_control((player) => player.pause()));
+      if (!floating) {
+        IosAudioSession.cancelInterruption(_iosMediaOwner);
+        unawaited(_control((player) => player.pause()));
+      }
     } else if (active && !_appActive) {
       _appActive = true;
       if (_resumeOnForeground) unawaited(_control((player) => player.play()));
@@ -1090,6 +1252,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   }
 
   void _togglePlayback() {
+    IosAudioSession.cancelInterruption(_iosMediaOwner);
     if (!_ready ||
         !_appActive ||
         _locked ||
@@ -2135,6 +2298,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   }
 
   Future<void> _selectEpisode(int index) async {
+    IosAudioSession.cancelInterruption(_iosMediaOwner);
     if (index < 0 ||
         index >= widget.episodes.length ||
         index == widget.currentIndex) {
@@ -2972,7 +3136,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                 playingIndex:
                     widget.playingIndex ??
                     (_ready ? widget.currentIndex : null),
-                playing: widget.playing,
+                playing:
+                    (widget.player?.playWhenReady ?? widget.playing) &&
+                    !(widget.player?.completed ?? false),
                 watched: widget.watchedEpisodes,
                 onSelectEpisode: (index) {
                   unawaited(_closePanel());
@@ -3041,7 +3207,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                     playingIndex:
                         widget.playingIndex ??
                         (_ready ? widget.currentIndex : null),
-                    playing: widget.playing,
+                    playing:
+                        (widget.player?.playWhenReady ?? widget.playing) &&
+                        !(widget.player?.completed ?? false),
                     watched: widget.watchedEpisodes,
                     onSelectEpisode: (index) {
                       unawaited(_animatePanel(0));

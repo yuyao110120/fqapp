@@ -61,44 +61,47 @@ class LibraryBackupService {
     final groups = ShelfGroupStore.instance.isReady
         ? ShelfGroupStore.instance.backupOrganization()
         : const <String, dynamic>{};
-    Future<LibraryBackup> build(String? data) => Isolate.run(
-      () => LibraryBackup.capture(
+    Future<({LibraryBackup backup, FormatException? sizeError})> build(
+      String? data,
+    ) => Isolate.run(() {
+      final backup = LibraryBackup.capture(
         shelf: shelf,
         history: snapshot.history,
         watched: snapshot.watched,
         aiData: data,
         groups: groups,
-      ),
-    );
+      );
+      try {
+        backup.encode();
+        return (backup: backup, sizeError: null);
+      } on FormatException catch (error) {
+        return (backup: backup, sizeError: error);
+      }
+    });
 
-    var backup = await build(aiData);
-    try {
-      backup.encode();
-      return backup;
-    } on FormatException {
-      if (!includeAi || aiData == null) rethrow;
-      if (!compactAi) {
-        // Optional trial rows are the first thing to drop. Required feedback,
-        // protections and prompts are never removed silently.
-        aiData = await _aiBackupService.encode(
+    final initial = await build(aiData);
+    final sizeError = initial.sizeError;
+    if (sizeError == null) return initial.backup;
+    if (!includeAi || aiData == null) throw sizeError;
+    if (!compactAi) {
+      // Optional trial rows are the first thing to drop. Required feedback,
+      // protections and prompts are never removed silently.
+      final compact = await build(
+        await _aiBackupService.encode(
           bookId: aiBookId,
           includeTrialDetails: false,
-        );
-        backup = await build(aiData);
-        try {
-          backup.encode();
-          lastAiExportStatus = AiExportStatus.compact;
-          lastAiExportNote = '备份超过 16 MB，已省略试验明细；反馈、保护和提示词仍完整。';
-          return backup;
-        } on FormatException {
-          // fall through to the explicit failure below
-        }
-      }
-      throw const FormatException(
-        'AI 数据仍超过 16 MB。请使用「按书导出 AI 资产」，或先清理部分历史后重试；'
-        '不会生成缺少必需分段的备份。',
+        ),
       );
+      if (compact.sizeError == null) {
+        lastAiExportStatus = AiExportStatus.compact;
+        lastAiExportNote = '备份超过 16 MB，已省略试验明细；反馈、保护和提示词仍完整。';
+        return compact.backup;
+      }
     }
+    throw const FormatException(
+      'AI 数据仍超过 16 MB。请使用「按书导出 AI 资产」，或先清理部分历史后重试；'
+      '不会生成缺少必需分段的备份。',
+    );
   }
 
   Future<Set<String>> aiBookIds() =>

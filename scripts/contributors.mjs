@@ -29,7 +29,7 @@ const query = `query($owner: String!, $repo: String!, $revision: GitObjectID!, $
     object(oid: $revision) {
       ... on Commit {
         history(first: 100, after: $after) {
-          nodes { author { user { login databaseId } } }
+          nodes { authors(first: 100) { nodes { user { login databaseId } } } }
           pageInfo { hasNextPage endCursor }
         }
       }
@@ -54,15 +54,24 @@ while (true) {
   const history = result.data?.repository?.object?.history;
   if (!history) throw new Error(`Commit history not found for ${revision}`);
   for (const commit of history.nodes) {
-    const user = commit.author?.user;
-    if (!user?.databaseId || user.login.endsWith('[bot]')) continue;
-    const entry = contributors.get(user.databaseId) ?? {
-      id: user.databaseId,
-      login: user.login,
-      contributions: 0,
-    };
-    entry.contributions++;
-    contributors.set(entry.id, entry);
+    const counted = new Set();
+    for (const author of commit.authors.nodes) {
+      const user = author.user;
+      if (
+        !user?.databaseId ||
+        user.login.endsWith('[bot]') ||
+        counted.has(user.databaseId)
+      )
+        continue;
+      counted.add(user.databaseId);
+      const entry = contributors.get(user.databaseId) ?? {
+        id: user.databaseId,
+        login: user.login,
+        contributions: 0,
+      };
+      entry.contributions++;
+      contributors.set(entry.id, entry);
+    }
   }
   if (!history.pageInfo.hasNextPage) break;
   const next = history.pageInfo.endCursor;

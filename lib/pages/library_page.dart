@@ -301,6 +301,11 @@ mixin _LibraryPageStateBase on State<LibraryPage>, WidgetsBindingObserver {
   /// 收藏 tab 的类型筛选：null 全部 / video 短剧 / manju 漫剧（官方还有
   /// 「其他视频」，本地没有这种 kind，不放空壳胶囊）。
   String? _collectionFilter;
+
+  /// 书架 tab 的媒介类型筛选:null 全部 / book 小说 / manga 漫画 /
+  /// video 短剧 / manju 漫剧 / audio 听书。书架 tab 收全部条目,
+  /// 「收藏」tab 仍是视频源的独立视图。
+  String? _shelfKindFilter;
   bool _visible = false;
   final Map<String, int> _latestChapterCounts = {};
   final _updateChecks = UpdateCheckGate();
@@ -520,10 +525,9 @@ mixin _LibraryPageStateBase on State<LibraryPage>, WidgetsBindingObserver {
     };
     setState(() {
       final records = ShelfStore.instance.records();
-      _shelf = _shelfEntries([
-        for (final record in records)
-          if (!_isVideoKind(record.item.kind)) record,
-      ], byIdentity);
+      // 书架 tab 收全部条目(小说 / 漫画 / 短剧 / 漫剧 / 听书),媒介区分
+      // 交给 `_shelfKindFilter`;收藏 tab 保留视频源的独立视图。
+      _shelf = _shelfEntries(records, byIdentity);
       _collection = _shelfEntries([
         for (final record in records)
           if (_isVideoKind(record.item.kind)) record,

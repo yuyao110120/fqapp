@@ -201,10 +201,19 @@ mixin _LibraryShelfChrome on _LibraryPageActions {
       );
       // 浏览历史不筛来源，不需要缓存扫描状态。
       if (_tab != 0) return toolbar;
+      final kindFilter = _ShelfKindFilter(
+        selected: _shelfKindFilter,
+        onChanged: (value) => setState(() => _shelfKindFilter = value),
+      );
       if (!narrow) {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [toolbar, _cacheStatus()],
+          children: [
+            toolbar,
+            const SizedBox(height: 10),
+            kindFilter,
+            _cacheStatus(),
+          ],
         );
       }
       return Column(
@@ -216,6 +225,8 @@ mixin _LibraryShelfChrome on _LibraryPageActions {
           ),
           const SizedBox(height: 8),
           toolbar,
+          const SizedBox(height: 10),
+          kindFilter,
           _cacheStatus(),
         ],
       );

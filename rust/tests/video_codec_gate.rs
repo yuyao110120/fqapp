@@ -19,8 +19,6 @@ const REJECTED_URL: &str = "https://example.invalid/bytevc2.mp4";
 const SPADE_A: &str = "kbwf80+1N+V9nwHQSp431GWvLeBlqizTYJ0o5FOrHuZhqimysg==";
 const KEY_HEX: &str = "4990a92de837e29e18031a370ab744e6";
 
-// The empty-alternate case parks process-wide routes. Each scenario owns and
-// resets that state so parallel tests cannot alter another request's plan.
 static ROUTES: Mutex<()> = Mutex::new(());
 
 fn exclusive() -> MutexGuard<'static, ()> {
@@ -151,9 +149,9 @@ async fn mixed_variants_keep_h264_preference_across_response_shapes() {
     // Put H.264 first: blindly taking the last array entry would pick bytevc2,
     // and filtering without ranking would pick H.265 at the same quality.
     let variants = vec![
-        json!({"main_url": ALLOWED_URL, "codec_type": "h264", "vwidth": 720}),
-        json!({"main_url": "https://example.invalid/h265.mp4", "codec_type": "h265", "vwidth": 720}),
-        json!({"main_url": REJECTED_URL, "codec_type": "bytevc2", "vwidth": 1080}),
+        json!({"main_url": ALLOWED_URL, "codec_type": "h264", "vwidth": 720, "vheight": 1280}),
+        json!({"main_url": "https://example.invalid/h265.mp4", "codec_type": "h265", "vwidth": 720, "vheight": 1280}),
+        json!({"main_url": REJECTED_URL, "codec_type": "bytevc2", "vwidth": 1080, "vheight": 1920}),
     ];
     for (name, payload) in response_shapes(variants) {
         let upstream = MockUpstream::start(move |_| MockReply::json(payload.clone())).await;
@@ -446,135 +444,86 @@ async fn stream_variants_do_not_merge_bytevc2_tiers() {
     assert!(!body.to_string().contains(REJECTED_URL), "{body}");
 }
 
-/// Upstream splits tiers by device: the same episode can come back as
-/// `bytevc2` (no decoder on the playback path) on one identity and as `h265`
-/// on another. A first answer that is entirely undecodable must therefore not
-/// end the request — rotate once and ask again.
+/// The official single-episode door (`/novel/player/video_model/v1/`) answers
+/// `data.video_model` in both the object and the string form; both must reach
+/// the shared parser, and the request must carry that door's own HAR params.
 #[tokio::test]
-async fn bytevc2_only_answer_retries_on_another_device_and_recovers() {
+async fn the_single_episode_model_door_parses_both_video_model_shapes() {
     let _guard = exclusive();
-    let rejected = json!({"data": {"video_model": {
+    let model = json!({
         "key_seed": "AAAA",
         "video_list": {"video_0": {
-            "codec_type": "bytevc2",
-            "main_url": REJECTED_URL,
-            "vwidth": 720,
-            "vheight": 1280
+            "main_url": ALLOWED_URL, "codec_type": "h264",
+            "vwidth": 1080, "vheight": 1920
         }}
-    }}});
-    let allowed = json!({"data": {"video_model": {
-        "key_seed": "AAAA",
-        "video_list": [
-            {"codec_type": "h265_hvc1", "main_url": ALLOWED_URL, "vwidth": 720, "vheight": 1280}
-        ]
-    }}});
-    for count in [2, 5] {
+    });
+    let object = json!({"code": 0, "data": {"video_model": model.clone()}});
+    let string = json!({"code": 0, "data": {"video_model": model.to_string()}});
+    for (name, payload) in [("object", object), ("string", string)] {
         reset_playback_route_state_for_tests();
-        let rejected = rejected.clone();
-        let allowed = allowed.clone();
-        let upstream = MockUpstream::start(move |request| {
-            if !request.path.contains("multi_video_model") {
-                return MockReply::status(400);
-            }
-            let device = query_map(&request.query)["device_id"].clone();
-            MockReply::json(if device == "0000000000000000" {
-                rejected.clone()
-            } else {
-                allowed.clone()
-            })
-        })
-        .await;
-        let dir = TempDir::new("video-codec-retry");
-        let server = build_server(
-            &dir,
-            Some(upstream.origin.clone()),
-            &[],
-            &[],
-            &pool_json(count),
-        )
-        .await;
-
-        let (status, body) = request_video(&server, "mode=stream").await;
-
-        assert_eq!(
-            status, 200,
-            "pool={count}: 换设备后应当拿到可播档位: {body}"
-        );
-        assert!(
-            body.to_string().contains(ALLOWED_URL),
-            "应当返回 h265 档: {body}"
-        );
-        let devices: Vec<String> = upstream
-            .requests()
-            .iter()
-            .filter(|request| request.path.contains("multi_video_model"))
-            .map(|request| query_map(&request.query)["device_id"].clone())
-            .collect();
-        assert_eq!(devices.len(), 2, "只多取一次流: {devices:?}");
-        assert_eq!(devices[0], "0000000000000000");
-        assert_ne!(devices[0], devices[1], "必须避开实际返回 bytevc2 的设备");
-    }
-}
-
-/// The retry is a single rotation, not a ladder: a source that is undecodable
-/// on every device must still fail with the same user-facing message, and must
-/// not spend the device pool chasing it.
-#[tokio::test]
-async fn bytevc2_only_answer_still_fails_after_one_retry() {
-    let _guard = exclusive();
-    let rejected = json!({"data": {"video_model": {
-        "key_seed": "AAAA",
-        "video_list": {"video_0": {
-            "codec_type": "bytevc2",
-            "main_url": REJECTED_URL,
-            "vwidth": 720,
-            "vheight": 1280
-        }}
-    }}});
-    for (purpose, empty_alternate) in [
-        ("foreground", false),
-        ("foreground", true),
-        ("prefetch", false),
-    ] {
-        reset_playback_route_state_for_tests();
-        let rejected = rejected.clone();
-        let upstream = MockUpstream::start(move |request| {
-            let device = query_map(&request.query)["device_id"].clone();
-            if empty_alternate && device != "0000000000000000" {
+        let reply = payload.clone();
+        let upstream = MockUpstream::start(move |req| {
+            if req.path == "/novel/player/multi_video_model/player/v1" {
                 MockReply::status(200)
             } else {
-                MockReply::json(rejected.clone())
+                MockReply::json(reply.clone())
             }
         })
         .await;
-        let dir = TempDir::new("video-codec-retry-fail");
+        let dir = TempDir::new("video-model-door");
         let server =
             build_server(&dir, Some(upstream.origin.clone()), &[], &[], &pool_json(5)).await;
 
-        let (status, body) =
-            request_video(&server, &format!("mode=stream&_playback_purpose={purpose}")).await;
+        let (status, body) = request_video(&server, "mode=stream").await;
+        assert_eq!(status, 200, "{name}: {body}");
+        assert_eq!(body["video_url"], ALLOWED_URL, "{name}: {body}");
 
-        assert_rejected(status, &body, "重试未恢复时仍报告不可解码");
-        let devices: Vec<String> = upstream
-            .requests()
+        let requests = upstream.requests();
+        let model_request = requests
             .iter()
-            .map(|request| query_map(&request.query)["device_id"].clone())
-            .collect();
-        if purpose == "prefetch" {
-            assert_eq!(devices.len(), 1, "预取不能触发编码重试: {devices:?}");
-        } else {
-            assert!(
-                devices.len() >= 2 && devices.len() <= 6,
-                "重取请求必须有界: {devices:?}"
-            );
-            assert_ne!(devices[0], devices[1], "必须换设备");
-            assert!(
-                devices[1..].iter().all(|device| device == &devices[1]),
-                "重试不能再轮换设备: {devices:?}"
-            );
-            if !empty_alternate {
-                assert_eq!(devices.len(), 2, "bytevc2 响应只重取一次");
-            }
+            .find(|request| request.path == "/novel/player/video_model/v1/")
+            .unwrap_or_else(|| panic!("{name}: the single-episode door must be asked"));
+        assert_eq!(model_request.method, "POST", "{name}");
+        assert_eq!(
+            model_request.header("content-encoding"),
+            Some("gzip"),
+            "{name}"
+        );
+        let expected_stub = hex::encode_upper(Md5::digest(&model_request.body));
+        assert_eq!(
+            model_request.header("x-ss-stub"),
+            Some(expected_stub.as_str()),
+            "{name}"
+        );
+        let plain = fqapi_core::crypto::gunzip(&model_request.body).expect("gzip model body");
+        let wire: Value = serde_json::from_slice(&plain).expect("model JSON body");
+        assert_eq!(wire["content_type"], json!(1004), "{name}");
+        assert_eq!(wire["video_id"], json!("episode"), "{name}");
+        assert_eq!(
+            wire["biz_param"],
+            json!({
+                "detail_page_version": 0,
+                "device_level": 3,
+                "disable_digg_stat": false,
+                "from_video_id": "",
+                "need_all_video_definition": true,
+                "need_mp4_align": false,
+                "source": 9,
+                "use_os_player": false,
+                "use_server_dns": false,
+                "video_platform": 3,
+            }),
+            "{name}"
+        );
+        let first = requests.first().expect("initial door");
+        assert_eq!(
+            query_map(&first.query).get("device_id"),
+            query_map(&model_request.query).get("device_id"),
+            "the single-episode door must reuse the initial identity"
+        );
+        for header in ["x-medusa", "x-helios", "x-khronos"] {
+            assert!(model_request.header(header).is_some(), "{header}");
         }
+        upstream.shutdown();
     }
 }

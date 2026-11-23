@@ -14,6 +14,7 @@ import 'package:fqapp/pages/audio_page.dart';
 import 'package:fqapp/services/api_client.dart';
 import 'package:fqapp/services/audio_preferences.dart';
 import 'package:fqapp/services/listening_session.dart';
+import 'package:fqapp/services/native_player.dart';
 
 import 'support/controlled_player.dart';
 
@@ -100,7 +101,13 @@ void main() {
       if (itemId == '1' && attempt == 1) {
         return _json({'error': '服务暂不可用'}, 503);
       }
-      return _json(_playinfoPayload(itemId), 200);
+      return _json(
+        _playinfoPayload(
+          itemId,
+          url: 'https://cdn.example/$itemId-$attempt.m4a',
+        ),
+        200,
+      );
     };
 
     final players = <ControlledNativePlayer>[];
@@ -171,6 +178,50 @@ void main() {
     expect(ListeningSession.instance.subtitles?.cues.single.text, '恢复后的服务端字幕');
     expect(ListeningSession.instance.followArmed, isFalse);
 
+    // CDN failure after a successful model fetch must not reuse that model
+    // on a manual retry. Preserve the listener's position and selected voice.
+    players.single.emitPosition(const Duration(seconds: 23));
+    players.single.errors.add(
+      const NativePlaybackException(
+        'Playback failed',
+        errorCode: 2004,
+        httpStatusCode: 403,
+      ),
+    );
+    await _flush(tester);
+    expect(find.text('播放出错，请稍后重试'), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const ValueKey('audio-retry')));
+    await tester.tap(find.byKey(const ValueKey('audio-retry')));
+    await _pumpUntil(
+      tester,
+      () =>
+          players.length == 2 &&
+          players.last.isPlaying &&
+          timePointAttempts['1'] == 5 &&
+          subtitleAttempts['1'] == 5,
+      settleMs: 700,
+    );
+    expect(sourceAttempts['1'], 3, reason: '手动重试重新获取模型');
+    expect(players.last.calls, contains('create:https://cdn.example/1-3.m4a'));
+    expect(players.last.position, const Duration(seconds: 23));
+    expect(
+      _sourceRequests
+          .where((uri) => uri.pathSegments.last == '1')
+          .map((uri) => uri.queryParameters['tone_id']),
+      ['0', '0', '0'],
+    );
+
+    // 用户关闭跟随后，已成功的轨道不应再排恢复请求或重新打开跟随。
+    ListeningSession.instance.setFollowArmed(false);
+    await tester.pump(const Duration(seconds: 30));
+    await _flush(tester);
+
+    expect(timePointAttempts['1'], 5, reason: '重试后取得有效时间轴，不再重复恢复');
+    expect(subtitleAttempts['1'], 5, reason: '重试后取得有效字幕，不再重复恢复');
+    expect(ListeningSession.instance.novelChapterId, 'novel-1');
+    expect(ListeningSession.instance.subtitles?.cues.single.text, '恢复后的服务端字幕');
+    expect(ListeningSession.instance.followArmed, isFalse);
+
     // 第 2 章再次耗尽后立刻换章；旧章的恢复 timer/request 必须一起失效。
     await tester.ensureVisible(find.byTooltip('下一章'));
     await tester.tap(find.byTooltip('下一章'));
@@ -225,11 +276,14 @@ void main() {
   });
 }
 
-Map<String, dynamic> _playinfoPayload(String itemId) => {
+Map<String, dynamic> _playinfoPayload(
+  String itemId, {
+  String url = 'https://cdn.example/1.m4a',
+}) => {
   'code': 0,
   'data': [
     {
-      'main_url': 'https://cdn.example/1.m4a',
+      'main_url': url,
       'item_id': itemId,
       'indate': 86400,
       'video_model': jsonEncode({
@@ -237,7 +291,7 @@ Map<String, dynamic> _playinfoPayload(String itemId) => {
         'media_type': 'audio',
         'video_duration': 42.0,
         'video_list': [
-          {'main_url': 'https://cdn.example/1.m4a'},
+          {'main_url': url},
         ],
       }),
     },

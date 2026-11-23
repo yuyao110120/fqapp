@@ -14,9 +14,11 @@ import java.io.InputStream
 import java.net.Proxy
 import java.net.UnknownHostException
 import java.nio.file.NoSuchFileException
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /**
  * Bridge to the shortplay C crypto core (libshortplay_crypto.so).
@@ -517,6 +519,30 @@ internal class HttpRangeClient(
         return false
     }
 
+    // Keep playback diagnostics correlatable without persisting the signed URL.
+    private fun hostFingerprint(url: String): String {
+        val host = url.toHttpUrlOrNull()?.host ?: return "invalid"
+        val digest = MessageDigest.getInstance("SHA-256").digest(host.toByteArray(Charsets.UTF_8))
+        return digest.take(8).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
+    private fun logMediaFailure(
+        phase: String,
+        url: String,
+        error: String,
+        attempt: Int? = null,
+        status: Int? = null,
+    ) {
+        val details = mutableListOf(
+            "phase=$phase",
+            "host=${hostFingerprint(url)}",
+            "error=$error",
+        )
+        if (attempt != null) details += "attempt=$attempt"
+        if (status != null) details += "status=$status"
+        logError("media failure ${details.joinToString(" ")}")
+    }
+
     private fun responseRange(resp: okhttp3.Response, start: Long, end: Long?): ResponseRange? {
         val body = resp.body ?: return null
         val encoding = resp.header("Content-Encoding")
@@ -598,7 +624,13 @@ internal class HttpRangeClient(
                     if (resp.code != 206 || range == null || range.length != 1L || total == null ||
                         total <= 0L
                     ) {
-                        logError("httpSize requires a complete byte-range size in HTTP 206")
+                        logMediaFailure(
+                            "size",
+                            url,
+                            "invalid_status",
+                            attempt = attempt + 1,
+                            status = resp.code,
+                        )
                         return@use -1L
                     }
                     // A Content-Range header alone is not proof of an actual byte.
@@ -617,7 +649,7 @@ internal class HttpRangeClient(
                     }
                     continue
                 }
-                logError("httpSize threw: ${t.javaClass.simpleName}")
+                logMediaFailure("size", url, t.javaClass.simpleName, attempt = attempt + 1)
                 return -1L
             }
         }
@@ -637,7 +669,7 @@ internal class HttpRangeClient(
                 .build()
             req
         } catch (t: Throwable) {
-            logError("httpRange threw for [$start-$end]: ${t.javaClass.simpleName}")
+            logMediaFailure("range", url, t.javaClass.simpleName)
             return null
         }
         var attempt = 0
@@ -647,7 +679,13 @@ internal class HttpRangeClient(
                     onHttpStatus(url, resp.code)
                     val range = responseRange(resp, start, end)
                     if (range == null) {
-                        logError("httpRange invalid HTTP ${resp.code} response for [$start-$end]")
+                        logMediaFailure(
+                            "range",
+                            url,
+                            "invalid_status",
+                            attempt = attempt + 1,
+                            status = resp.code,
+                        )
                         return null
                     }
                     // Bound the allocation even when a server ignores Range and
@@ -668,7 +706,7 @@ internal class HttpRangeClient(
                     }
                     continue
                 }
-                logError("httpRange threw for [$start-$end]: ${t.javaClass.simpleName}")
+                logMediaFailure("range", url, t.javaClass.simpleName, attempt = attempt + 1)
                 return null
             }
         }
@@ -715,7 +753,7 @@ internal class HttpRangeClient(
             streams[id] = Stream(req, start, expectedSize)
             id
         } catch (t: Throwable) {
-            logError("streamPrepare threw @$start: ${t.javaClass.simpleName}")
+            logMediaFailure("prepare", url, t.javaClass.simpleName)
             0L
         }
     }
@@ -731,8 +769,8 @@ internal class HttpRangeClient(
         }
         var resp: okhttp3.Response? = null
         var retained = false
+        var attempt = 0
         try {
-            var attempt = 0
             while (true) {
                 val call = streamClient.newCall(s.request)
                 synchronized(s) {
@@ -748,7 +786,13 @@ internal class HttpRangeClient(
                     onHttpStatus(s.url, response.code)
                     val range = responseRange(response, s.start, null)
                     if (range == null || (s.expectedSize >= 0 && range.total != s.expectedSize)) {
-                        logError("streamConnect invalid HTTP ${response.code} response @${s.start}")
+                        logMediaFailure(
+                            "connect",
+                            s.url,
+                            "invalid_status",
+                            attempt = attempt + 1,
+                            status = response.code,
+                        )
                         return false
                     }
                     synchronized(s) {
@@ -775,7 +819,7 @@ internal class HttpRangeClient(
                 }
             }
         } catch (t: Throwable) {
-            logError("streamConnect threw @${s.start}: ${t.javaClass.simpleName}")
+            logMediaFailure("connect", s.url, t.javaClass.simpleName, attempt = attempt + 1)
             return false
         } finally {
             if (!retained) {
@@ -838,7 +882,7 @@ internal class HttpRangeClient(
                 }
             } catch (t: Throwable) {
                 streamClose(id)
-                logError("streamRead threw id=$id: ${t.javaClass.simpleName}")
+                logMediaFailure("read", s.url, t.javaClass.simpleName)
                 -1
             }
         }

@@ -7,8 +7,8 @@
 # ExternalLibrary.process() 从进程自身符号里查找入口（见 lib/services/rust_bootstrap_io.dart）。
 #
 # 用法：
-#   ./scripts/build_rust_ios.sh              # 只编真机 arm64（出 IPA 用）
-#   ./scripts/build_rust_ios.sh --simulator  # 额外编模拟器片并打 xcframework
+#   bash scripts/build_rust_ios.sh              # 只编真机 arm64（出 IPA 用）
+#   bash scripts/build_rust_ios.sh --simulator  # 额外编当前 Mac 架构的模拟器库
 #
 # 与 scripts/build_rust_backend.sh 同一套约定：pin 版本、缺依赖就硬错，不静默降级。
 set -euo pipefail
@@ -59,21 +59,22 @@ build_target() {
 }
 
 build_target aarch64-apple-ios
-mkdir -p "$OUT_DIR"
+mkdir -p "$OUT_DIR/iphoneos"
 cp -f "$APP_DIR/rust/target/aarch64-apple-ios/release/libfqapi_core.a" \
-      "$OUT_DIR/libfqapi_core.a"
-echo "==> 已放置：$OUT_DIR/libfqapi_core.a"
-lipo -info "$OUT_DIR/libfqapi_core.a"
+      "$OUT_DIR/iphoneos/libfqapi_core.a"
+echo "==> 已放置：$OUT_DIR/iphoneos/libfqapi_core.a"
+lipo -info "$OUT_DIR/iphoneos/libfqapi_core.a"
 
 if [ "$SIMULATOR" -eq 1 ]; then
-  build_target aarch64-apple-ios-sim
-  build_target x86_64-apple-ios
-  echo "==> 模拟器片合并为 xcframework"
-  rm -rf "$APP_DIR/ios/Frameworks/FqapiCore.xcframework"
-  xcodebuild -create-xcframework \
-    -library "$APP_DIR/rust/target/aarch64-apple-ios/release/libfqapi_core.a" \
-    -library "$APP_DIR/rust/target/aarch64-apple-ios-sim/release/libfqapi_core.a" \
-    -library "$APP_DIR/rust/target/x86_64-apple-ios/release/libfqapi_core.a" \
-    -output "$APP_DIR/ios/Frameworks/FqapiCore.xcframework"
-  echo "==> 注意：xcframework 与 libfqapi_core.a 二选一，当前 xcconfig 链接的是 .a。"
+  case "$(uname -m)" in
+    arm64) simulator_target=aarch64-apple-ios-sim ;;
+    x86_64) simulator_target=x86_64-apple-ios ;;
+    *) echo "错误：不支持的 Mac 架构。" >&2; exit 1 ;;
+  esac
+  build_target "$simulator_target"
+  mkdir -p "$OUT_DIR/iphonesimulator"
+  cp -f "$APP_DIR/rust/target/$simulator_target/release/libfqapi_core.a" \
+        "$OUT_DIR/iphonesimulator/libfqapi_core.a"
+  echo "==> 已放置：$OUT_DIR/iphonesimulator/libfqapi_core.a"
+  lipo -info "$OUT_DIR/iphonesimulator/libfqapi_core.a"
 fi

@@ -1281,25 +1281,30 @@ void main() {
     // The destination is lazy: nothing of the 短剧 feed is built before a tap.
     expect(find.byType(DramaPage), findsNothing);
 
-    // 底栏自动隐藏的壳层接线守卫：在首页 feed 上真滚一把，body 的
-    // UserScrollNotification 监听 → 控制器 → DockAutoHideSlide 三段任一被拆
-    // 掉，dock 都会停在原位（其它断言测不到这件事）。
-    final Finder shellSlide = find.ancestor(
-      of: find.byType(ShellDock),
-      matching: find.byType(DockAutoHideSlide),
+    // 底栏已常驻:壳层不再有滚动自动隐藏的包装层。
+    expect(
+      find.ancestor(
+        of: find.byType(ShellDock),
+        matching: find.byType(DockAutoHideSlide),
+      ),
+      findsNothing,
     );
-    Offset dockOffset() => tester
-        .widget<AnimatedSlide>(
-          find.descendant(of: shellSlide, matching: find.byType(AnimatedSlide)),
-        )
-        .offset;
-    expect(dockOffset(), Offset.zero);
+    final dockBefore = tester.getRect(find.byType(ShellDock));
+    const dockSurface = Rect.fromLTWH(0, 0, 400, 800);
     await tester.dragFrom(const Offset(200, 300), const Offset(0, -200));
-    await tester.pump();
-    expect(dockOffset(), const Offset(0, 1));
-    await tester.dragFrom(const Offset(200, 300), const Offset(0, 200));
     await tester.pumpAndSettle();
-    expect(dockOffset(), Offset.zero);
+    final dockAfter = tester.getRect(find.byType(ShellDock));
+    expect(
+      dockAfter.intersect(dockSurface).height,
+      greaterThan(dockAfter.height * 0.9),
+      reason: '滚动后底栏必须仍在可视区内',
+    );
+    expect(dockAfter.top, closeTo(dockBefore.top, 0.5), reason: '滚动不应移动底栏');
+    expect(
+      dockAfter.bottom,
+      closeTo(dockBefore.bottom, 0.5),
+      reason: '滚动不应移动底栏',
+    );
 
     await tester.tap(navLabel('短剧'));
     await tester.pumpAndSettle();

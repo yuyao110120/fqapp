@@ -7,9 +7,92 @@ import 'package:fqapp/services/chapter_text_formatter.dart';
 import 'package:fqapp/services/reader_preferences.dart';
 import 'package:fqapp/widgets/reader/reader_chapter_layout.dart';
 import 'package:fqapp/widgets/reader/reader_paged_view.dart';
+import 'package:fqapp/widgets/reader/reader_text_selection.dart';
 
 void main() {
+  testWidgets('first cover turn after switching style during a slide drag', (
+    tester,
+  ) async {
+    final style = await _pumpPager(tester, ReaderPageTurnStyle.slide);
+    final pager = tester.state<ReaderPagedViewState>(
+      find.byType(ReaderPagedView),
+    );
+    final viewport = find.byType(PageView);
+    final gesture = await tester.startGesture(tester.getCenter(viewport));
+    await gesture.moveBy(const Offset(-75, 0));
+    await tester.pump();
+    expect(pager.isTurning, isTrue);
+
+    style.value = ReaderPageTurnStyle.cover;
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(pager.isTurning, isFalse);
+    expect(pager.currentPage, 1);
+
+    await tester.drag(viewport, const Offset(-320, 0));
+    await tester.pumpAndSettle();
+    expect(pager.currentPage, 2);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('unmarked adjacent pages skip selection painters', (
+    tester,
+  ) async {
+    final geometry = ReaderSelectionGeometry();
+    await _pumpPager(
+      tester,
+      ReaderPageTurnStyle.slide,
+      selectionScope: ReaderSelectionScope(
+        geometry: geometry,
+        washColor: Colors.yellow,
+        handleColor: Colors.black,
+        underlineColor: Colors.black,
+        narrationColor: Colors.yellow,
+      ),
+    );
+    expect(find.byType(ReaderBlockMarkLayer), findsWidgets);
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is CustomPaint && widget.painter is ReaderBlockMarkPainter,
+      ),
+      findsNothing,
+    );
+    final layer = tester.widget<ReaderBlockMarkLayer>(
+      find.byType(ReaderBlockMarkLayer).first,
+    );
+    final entry = geometry.entryFor(layer.block.index);
+    expect(entry, isNotNull);
+    expect(entry!.painter.height, greaterThan(0));
+  });
+
   for (final style in [ReaderPageTurnStyle.slide, ReaderPageTurnStyle.cover]) {
+    testWidgets('$style rapid reversals reuse the active pair and settle', (
+      tester,
+    ) async {
+      await _pumpPager(tester, style);
+      final view = find.byType(PageView);
+      final controller = tester.widget<PageView>(view).controller!;
+      final pager = tester.state<ReaderPagedViewState>(
+        find.byType(ReaderPagedView),
+      );
+      final width = controller.position.viewportDimension;
+      for (var attempt = 0; attempt < 12; attempt++) {
+        final backward = attempt.isEven;
+        // Interrupt a snap while the old page still owns the midpoint.
+        controller.jumpTo(width * (backward ? 1.2 : 1.8));
+        final gesture = await tester.startGesture(tester.getCenter(view));
+        await gesture.moveBy(Offset(backward ? 270 : -270, 0));
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(controller.page, closeTo(backward ? 1 : 2, .001));
+        await gesture.up();
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(pager.isTurning, isFalse);
+      }
+      expect(tester.takeException(), isNull);
+    });
+
     for (final direction in [1, -1]) {
       for (final startX in [40.0, 140.0, 280.0, 360.0]) {
         testWidgets('$style 翻页从屏幕边沿滑入，与触点无关（direction $direction x=$startX）', (
@@ -169,7 +252,13 @@ void main() {
   }
 }
 
-Future<void> _pumpPager(WidgetTester tester, ReaderPageTurnStyle style) async {
+Future<ValueNotifier<ReaderPageTurnStyle>> _pumpPager(
+  WidgetTester tester,
+  ReaderPageTurnStyle initialStyle, {
+  ReaderSelectionScope? selectionScope,
+}) async {
+  final style = ValueNotifier(initialStyle);
+  addTearDown(style.dispose);
   await tester.binding.setSurfaceSize(const Size(600, 800));
   addTearDown(() => tester.binding.setSurfaceSize(null));
   final layout = ReaderChapterLayout(
@@ -193,19 +282,24 @@ Future<void> _pumpPager(WidgetTester tester, ReaderPageTurnStyle style) async {
       home: Scaffold(
         body: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 100),
-          child: ReaderPagedView(
-            layout: layout,
-            pageIndex: 1,
-            hasPreviousChapter: true,
-            hasNextChapter: true,
-            onPageChanged: (_) {},
-            onBoundary: (_) async {},
-            onDragStart: () {},
-            turnStyle: style,
-            backgroundColor: Colors.white,
+          child: ValueListenableBuilder(
+            valueListenable: style,
+            builder: (context, value, _) => ReaderPagedView(
+              layout: layout,
+              pageIndex: 1,
+              hasPreviousChapter: true,
+              hasNextChapter: true,
+              onPageChanged: (_) {},
+              onBoundary: (_) async {},
+              onDragStart: () {},
+              turnStyle: value,
+              backgroundColor: Colors.white,
+              selectionScope: selectionScope,
+            ),
           ),
         ),
       ),
     ),
   );
+  return style;
 }

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -32,7 +33,7 @@ class UpstreamWebDavExchange {
   preview(SyncDocument local, {bool requireJournal = false}) async {
     final state = await _read(requireJournal: requireJournal);
     return (
-      document: _merge(state, local),
+      document: await _mergeForPreview(state, local),
       remote: state.publicDocument?.backup,
       revision: syncJson([state.publicFile.etag, state.journal.etag]),
     );
@@ -79,37 +80,36 @@ class UpstreamWebDavExchange {
         continue;
       }
 
-      final merged = _merge(state, local);
-      final projection = _project(merged, state.publicDocument);
-      WebDavSyncDocument.decode(projection);
-      final current = state.publicFile.bytes;
-      if (_sameProjection(projection, current)) {
-        if (syncJson(merged.toJson()) != syncJson(state.committed?.toJson()) &&
-            !await journal.write(_encode(merged, null), state.journal.etag)) {
+      final plan = await _prepareWrite(state, local);
+      final proposal = plan.proposal;
+      if (proposal == null) {
+        final committed = plan.committed;
+        if (committed != null &&
+            !await journal.write(committed, state.journal.etag)) {
           continue;
         }
-        return merged;
+        return plan.document;
       }
 
-      final proposal = _Proposal(_hash(current), projection, merged);
-      final reservation = _encode(state.committed, proposal);
-      if (!await journal.write(reservation, state.journal.etag)) {
+      if (!await journal.write(proposal.reservation, state.journal.etag)) {
         continue;
       }
       final saved = await journal.read();
-      if (_hash(saved.bytes) != _hash(reservation)) {
+      if (await _hashInBackground(saved.bytes) != proposal.reservationHash) {
         continue;
       }
-      if (!await publicFile.write(projection, state.publicFile.etag)) {
+      if (!await publicFile.write(proposal.projection, state.publicFile.etag)) {
         final observed = await publicFile.read();
-        if (_hash(observed.bytes) == proposal.targetHash) continue;
+        if (await _hashInBackground(observed.bytes) == proposal.targetHash) {
+          continue;
+        }
         // A definite precondition failure leaves the old public revision
         // untouched by this writer. Remove only our exact journal proposal.
         await journal.write(_encode(state.committed, null), saved.etag);
         continue;
       }
-      if (await journal.write(_encode(merged, null), saved.etag)) {
-        return merged;
+      if (await journal.write(plan.committed!, saved.etag)) {
+        return plan.document;
       }
     }
     throw const SyncFailure('WebDAV 文件同时被修改，请重试同步');
@@ -118,12 +118,65 @@ class UpstreamWebDavExchange {
   static Never _interrupted() =>
       throw const SyncFailure('上游文件在上次同步中途被修改，已保留云端文件和本机进度，请检查该目录的备份。');
 
+  static Future<SyncDocument> _mergeForPreview(
+    _RemoteState state,
+    SyncDocument local,
+  ) => Isolate.run(() => _merge(state, local));
+
+  static Future<
+    ({
+      SyncDocument document,
+      Uint8List? committed,
+      ({
+        Uint8List projection,
+        Uint8List reservation,
+        String? reservationHash,
+        String targetHash,
+      })?
+      proposal,
+    })
+  >
+  _prepareWrite(_RemoteState state, SyncDocument local) => Isolate.run(() {
+    final merged = _merge(state, local);
+    final projection = _project(merged, state.publicDocument);
+    WebDavSyncDocument.decode(projection);
+    final current = state.publicFile.bytes;
+    if (_sameProjection(projection, current)) {
+      final unchanged =
+          syncJson(merged.toJson()) == syncJson(state.committed?.toJson());
+      return (
+        document: merged,
+        committed: unchanged ? null : _encode(merged, null),
+        proposal: null,
+      );
+    }
+    final proposal = _Proposal(_hash(current), projection, merged);
+    final reservation = _encode(state.committed, proposal);
+    return (
+      document: merged,
+      committed: _encode(merged, null),
+      proposal: (
+        projection: projection,
+        reservation: reservation,
+        reservationHash: _hash(reservation),
+        targetHash: proposal.targetHash,
+      ),
+    );
+  });
+
   Future<_RemoteState> _read({required bool requireJournal}) async {
     final metadata = await journal.read();
     if (requireJournal && metadata.bytes == null) {
       throw const SyncFailure('云端 WebDAV 合并日志已消失，已停止自动重建');
     }
     final file = await publicFile.read();
+    return _decodeInBackground(file, metadata);
+  }
+
+  static Future<_RemoteState> _decodeInBackground(
+    WebDavRemote file,
+    WebDavRemote metadata,
+  ) => Isolate.run(() {
     final document = file.bytes == null
         ? null
         : WebDavSyncDocument.decode(file.bytes!);
@@ -148,9 +201,9 @@ class UpstreamWebDavExchange {
       }
     }
     return _RemoteState(file, metadata, document, committed, pending);
-  }
+  });
 
-  SyncDocument _merge(_RemoteState state, SyncDocument local) {
+  static SyncDocument _merge(_RemoteState state, SyncDocument local) {
     var base = state.committed;
     if (state.pending case final pending?) {
       final hash = _hash(state.publicFile.bytes);
@@ -207,7 +260,7 @@ class UpstreamWebDavExchange {
     return upstream;
   }
 
-  Uint8List _project(SyncDocument merged, WebDavSyncDocument? previous) {
+  static Uint8List _project(SyncDocument merged, WebDavSyncDocument? previous) {
     final desired = SyncSnapshot.fromDocument(merged).toBackup();
     final old = previous?.backup;
     final removed = {...?previous?.removedShelf};
@@ -274,6 +327,9 @@ class UpstreamWebDavExchange {
 
   static String? _hash(Uint8List? bytes) =>
       bytes == null ? null : sha256.convert(bytes).toString();
+
+  static Future<String?> _hashInBackground(Uint8List? bytes) =>
+      Isolate.run(() => _hash(bytes));
 
   static Uint8List _encode(SyncDocument? committed, _Proposal? pending) =>
       Uint8List.fromList(

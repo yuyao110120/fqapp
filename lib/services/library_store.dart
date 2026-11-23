@@ -168,6 +168,7 @@ class LibraryStore implements ReaderStore {
   /// writes; hidden pages defer their snapshots until the next visit.
   bool get isInitialized => EncryptedHive.isBoxOpen(Hive, _histBoxName);
   ValueListenable<Box<dynamic>> get historyListenable => _histBox.listenable();
+  Stream<BoxEvent> get historyChanges => _histBox.watch();
   ValueListenable<Box<dynamic>> get watchedListenable =>
       _watchedBox.listenable();
   ValueListenable<Box<dynamic>> get readTimeListenable =>
@@ -321,6 +322,7 @@ class LibraryStore implements ReaderStore {
   }
 
   List<Map<String, dynamic>> historySnapshot() {
+    if (!isInitialized) return const [];
     historySnapshotBuilds++;
     final byIdentity = <(String, String, String), Map<String, dynamic>>{};
     for (final key in _histBox.keys) {
@@ -760,6 +762,7 @@ class LibraryStore implements ReaderStore {
   }
 
   Map<String, Map<String, double>> readTimeSnapshot() {
+    if (!isInitialized) return const {};
     final out = <String, Map<String, double>>{};
     for (final key in _readTimeBox.keys) {
       final days = _readTimeRecord(_readTimeBox.get(key));
@@ -840,6 +843,7 @@ class LibraryStore implements ReaderStore {
   /// The media kind recorded with each read-time identity, when known. Used by
   /// statistics to open read-time-only rows with the right content type.
   Map<String, String> readTimeKindSnapshot() {
+    if (!isInitialized) return const {};
     final out = <String, String>{};
     for (final key in _readTimeBox.keys) {
       final raw = _readTimeBox.get(key);

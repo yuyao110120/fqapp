@@ -1,6 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fqapp/services/api_client.dart';
 import 'package:fqapp/services/audio_play_error.dart';
+import 'package:fqapp/services/backend_transport.dart';
+import 'package:fqapp/services/native_player.dart';
 
 /// 播放失败时的用户可见文案。
 ///
@@ -31,16 +35,25 @@ void main() {
     );
   });
 
-  test(
-    'returns null for unknown failures so the caller keeps its own text',
-    () {
-      expect(
-        audioPlayErrorMessage(const ApiException('SOMETHING_ELSE')),
-        isNull,
-      );
-      expect(audioPlayErrorMessage(StateError('boom')), isNull);
-    },
-  );
+  test('maps explicit timeouts and leaves unknown failures to the caller', () {
+    for (final error in [
+      TimeoutException('deadline'),
+      BackendRequestAborted('deadline', timedOut: true),
+      const ApiException('timeout', statusCode: 408),
+      const NativePlaybackException('Playback failed', errorCode: 2002),
+    ]) {
+      expect(audioPlayErrorMessage(error), '加载超时，请检查网络后重试。');
+    }
+    expect(audioPlayErrorMessage(BackendRequestAborted('cancelled')), isNull);
+    expect(
+      audioPlayErrorMessage(
+        const NativePlaybackException('Playback failed', errorCode: 2001),
+      ),
+      isNull,
+    );
+    expect(audioPlayErrorMessage(const ApiException('SOMETHING_ELSE')), isNull);
+    expect(audioPlayErrorMessage(StateError('boom')), isNull);
+  });
 
   test('prefers the delisted-tone reason over the review marker', () {
     // 两个标记同时出现时，音色下架是更具体的解释。

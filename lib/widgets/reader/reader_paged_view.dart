@@ -153,10 +153,19 @@ class _ReaderPageScrollPhysics extends PageScrollPhysics {
     ScrollMetrics position,
     double velocity,
   ) {
-    final simulation = super.createBallisticSimulation(position, velocity);
-    if (simulation == null) return null;
     final width = position.viewportDimension;
+    if (width <= 0) return null;
     final page = position.pixels / width;
+    // A release at a page boundary has nowhere to settle. Running a spring
+    // with identical clamp bounds can leave an invisible scroll activity.
+    final aligned =
+        (position.pixels - page.round() * width).abs() <=
+        toleranceFor(position).distance;
+    final simulation = super.createBallisticSimulation(
+      position,
+      aligned ? 0 : velocity,
+    );
+    if (simulation == null || aligned) return simulation;
     // A fast release can drive the spring past its target and reveal a third page.
     return ClampedSimulation(
       simulation,
@@ -301,6 +310,7 @@ class ReaderPagedViewState extends State<ReaderPagedView>
       _turning ||
       _boundaryPending ||
       _pageDrag != null ||
+      (_attachedPosition?.isScrollingNotifier.value ?? false) ||
       _chapterTurnAnimation.isAnimating ||
       _curlAnimation.isAnimating;
 
@@ -325,7 +335,9 @@ class ReaderPagedViewState extends State<ReaderPagedView>
     if (!identical(oldWidget.layout, widget.layout) ||
         oldWidget.hasPreviousChapter != widget.hasPreviousChapter ||
         oldWidget.hasNextChapter != widget.hasNextChapter ||
-        (oldWidget.endPage == null) != (widget.endPage == null)) {
+        (oldWidget.endPage == null) != (widget.endPage == null) ||
+        oldWidget.turnStyle != widget.turnStyle ||
+        oldWidget.instantSwipe != widget.instantSwipe) {
       _cancelPageDrag();
       final oldController = _controller;
       _controller = _newController();
@@ -396,7 +408,7 @@ class ReaderPagedViewState extends State<ReaderPagedView>
             toIndex: target,
           );
         });
-        await _curlAnimation.forward(from: 0);
+        await _curlAnimation.forward(from: 0).orCancel;
       } else {
         await controller.animateToPage(
           target,
@@ -404,6 +416,9 @@ class ReaderPagedViewState extends State<ReaderPagedView>
           curve: Curves.easeOutCubic,
         );
       }
+    } on TickerCanceled {
+      // Changing the turn style or leaving the reader cancels the old curl.
+      // Complete its caller instead of leaving an awaited TickerFuture pending.
     } finally {
       if (identical(controller, _controller)) _turning = false;
     }
@@ -534,8 +549,11 @@ class ReaderPagedViewState extends State<ReaderPagedView>
       onHorizontalDragStart: (details) {
         if (_turning || _boundaryPending) return;
         final position = _attachedPosition;
-        if (position == null || !position.haveDimensions) return;
-        _pageDragFrom = _attachedPage!.round();
+        if (position == null ||
+            !position.haveDimensions ||
+            position.viewportDimension <= 0) {
+          return;
+        }
         _pageDragDirection = null;
         _pageDragAnchorDx = details.globalPosition.dx;
         _pageDragStartPixels = position.pixels;
@@ -547,7 +565,20 @@ class ReaderPagedViewState extends State<ReaderPagedView>
         if (drag == null || position == null) return;
         final delta = details.primaryDelta ?? 0;
         if (delta == 0) return;
-        final direction = _pageDragDirection ??= delta < 0 ? 1 : -1;
+        if (_pageDragDirection == null) {
+          final direction = delta < 0 ? 1 : -1;
+          final start = _pageDragStartPixels / position.viewportDimension;
+          // An interrupted settle already lies between two pages. Reuse
+          // that pair even if the next swipe reverses before the midpoint.
+          final nearest = start.round();
+          _pageDragFrom = (start - nearest).abs() < .000001
+              ? nearest
+              : direction > 0
+              ? start.floor()
+              : start.ceil();
+          _pageDragDirection = direction;
+        }
+        final direction = _pageDragDirection!;
         final target = _pageDragFrom + direction;
         if (target < 0 || target >= _itemCount) {
           drag.update(details);
@@ -814,6 +845,11 @@ class ReaderPagedViewState extends State<ReaderPagedView>
       child: PageView.builder(
         key: ObjectKey(_controller),
         controller: _controller,
+        // Prepare the adjacent text pages before a horizontal turn exposes
+        // them. Keep the cache bounded to one viewport on either side.
+        allowImplicitScrolling:
+            widget.turnStyle == ReaderPageTurnStyle.slide ||
+            widget.turnStyle == ReaderPageTurnStyle.cover,
         pageSnapping: !_followsFinger,
         physics:
             (_boundaryPending ||
@@ -886,7 +922,12 @@ class ReaderPagedViewState extends State<ReaderPagedView>
                   child: child,
                 );
               },
-              child: ColoredBox(color: widget.backgroundColor, child: content),
+              child: RepaintBoundary(
+                child: ColoredBox(
+                  color: widget.backgroundColor,
+                  child: content,
+                ),
+              ),
             );
           }
           return _wrapCurl(_wrapSwipe(content));

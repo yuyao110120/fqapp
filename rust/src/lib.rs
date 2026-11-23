@@ -39,7 +39,7 @@ mod frb_generated;
 #[cfg(test)]
 mod network_proxy_tests;
 
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos", target_os = "ios"))]
 mod desktop_fetch;
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos", target_os = "ios"))]
 mod desktop_media;

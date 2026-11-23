@@ -4353,7 +4353,9 @@ class _InlineVideoLayer extends StatelessWidget {
                     rect: layout.video,
                     child: RotatedBox(
                       quarterTurns: playback.rotation.value,
-                      child: isDesktopShell
+                      // iOS 与桌面一样由进程内的 media_kit 出画,没有
+                      // Texture 可画;Android 才走原生纹理。
+                      child: isDesktopShell || isIOSPlatform
                           ? DesktopPlatform.instance.videoSurface(
                               textureId,
                               key: ValueKey('drama_inline_${item.id}'),
